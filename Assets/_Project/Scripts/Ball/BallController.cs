@@ -11,21 +11,24 @@ public class BallController : MonoBehaviour
         Idle,
         Resetting,
 
-        // First required bounce:
-        OpponentServeToGround,
-        ServeBounceToPlayer,
+        // First required bounce: opponent serve must bounce on player side.
+        OpponentServeToPlayerGround,
 
+        // Ball is physically live near the player.
         WaitingForPlayerHit,
 
-        // Second required bounce:
+        // Second required bounce: player's first return must bounce on opponent side.
         PlayerShotToOpponentGround,
-        OpponentBounceToHit,
 
-        // Normal rally after the two-bounce rule:
-        PlayerShotToOpponentHit,
+        // Ball is physically bouncing toward the AI.
+        OpponentBounceLive,
+
+        // AI intentionally misses this physical bounce.
+        AIMissLive,
+
+        // AI has returned the ball toward the player.
         OpponentReturnToPlayer,
 
-        AIMissBounce,
         PointOver
     }
 
@@ -49,48 +52,63 @@ public class BallController : MonoBehaviour
     [SerializeField] private Transform servePoint;
 
     [Header("Opponent")]
-    [Tooltip("The cube that represents the AI opponent.")]
+    [Tooltip("The cube or model that represents the AI opponent.")]
     [SerializeField] private Transform opponentCube;
 
-    [Tooltip("Optional resting position for the opponent cube.")]
+    [Tooltip("Optional resting position for the opponent.")]
     [SerializeField] private Transform opponentHomePoint;
 
-    [Tooltip("First corner of the opponent court area.")]
+    [Tooltip("First corner of the opponent court.")]
     [SerializeField] private Transform opponentCornerA;
 
-    [Tooltip("Diagonally opposite corner of the opponent court area.")]
+    [Tooltip("Diagonally opposite corner of the opponent court.")]
     [SerializeField] private Transform opponentCornerB;
 
-    [Tooltip("Height at which the AI cube hits the ball.")]
-    [SerializeField] private float opponentBallHitHeight = 0.8f;
-
-    [Tooltip("Height of the ball centre above the ground.")]
-    [SerializeField] private float ballGroundOffset = 0.045f;
+    [Tooltip("Height above the opponent court at which the AI meets the bounced ball.")]
+    [SerializeField, Min(0.1f)]
+    private float opponentBallHitHeight = 0.75f;
 
     [Range(0f, 1f)]
-    [Tooltip("0.2 means that the AI misses 20% of player shots.")]
-    [SerializeField] private float opponentMissChance = 0.2f;
+    [Tooltip("0.2 means the opponent misses 20% of valid player shots.")]
+    [SerializeField]
+    private float opponentMissChance = 0.2f;
 
-    [Tooltip("Minimum distance between the AI and the missed ball.")]
-    [SerializeField] private float opponentMissDistance = 1f;
+    [Tooltip("How far away from the ball the opponent moves when intentionally missing.")]
+    [SerializeField, Min(0.1f)]
+    private float opponentMissDistance = 1.25f;
 
     [Header("Player Court")]
-    [Tooltip("First corner of the player court area.")]
+    [Tooltip("First corner of the player court.")]
     [SerializeField] private Transform playerCornerA;
 
-    [Tooltip("Diagonally opposite corner of the player court area.")]
+    [Tooltip("Diagonally opposite corner of the player court.")]
     [SerializeField] private Transform playerCornerB;
 
-    [Tooltip("Height at which the ball should arrive near the player.")]
-    [SerializeField] private float playerReceiveHeight = 1f;
+    [Tooltip("Height above the player court used for an AI return target.")]
+    [SerializeField, Min(0.1f)]
+    private float playerReceiveHeight = 1f;
+
+    [Header("Court Detection")]
+    [Tooltip("Height of the ball's centre above the court at a landing point.")]
+    [SerializeField, Min(0f)]
+    private float ballGroundOffset = 0.045f;
+
+    [Tooltip("Extra tolerance used by the mathematical ground-plane detector.")]
+    [SerializeField, Min(0.001f)]
+    private float groundDetectionTolerance = 0.035f;
+
+    [Tooltip("Positive values make the valid court slightly smaller. Negative values expand it.")]
+    [SerializeField]
+    private float courtBoundsPadding = 0.01f;
 
     [Header("Net")]
-    [Tooltip("Optional transform placed at the top-centre of the net.")]
+    [Tooltip("Optional point placed at the top-centre of the net.")]
     [SerializeField] private Transform netTop;
 
-    [SerializeField] private float netClearance = 0.25f;
+    [SerializeField, Min(0f)]
+    private float netClearance = 0.25f;
 
-    [Header("Racket")]
+    [Header("Racket Assistance")]
     [Tooltip("Assign the racket or right controller transform.")]
     [SerializeField] private Transform racketTransform;
 
@@ -99,73 +117,91 @@ public class BallController : MonoBehaviour
 
     [SerializeField] private LayerMask racketLayers = ~0;
 
-    [SerializeField] private float racketAssistRadius = 0.12f;
-    [SerializeField] private float racketHitCooldown = 0.15f;
+    [SerializeField, Min(0.01f)]
+    private float racketAssistRadius = 0.12f;
 
-    [Header("Serve")]
-    [SerializeField] private float serveDelay = 0.6f;
-    [SerializeField] private float serveFlightTime = 1.1f;
-    [SerializeField] private float serveArcHeight = 1.4f;
+    [SerializeField, Min(0f)]
+    private float racketHitCooldown = 0.15f;
 
-    [Header("Serve Bounce")]
-    [SerializeField] private float serveBounceFlightTime = 0.55f;
-    [SerializeField] private float serveBounceArcHeight = 0.65f;
+    [Header("Opponent Serve")]
+    [SerializeField, Min(0f)]
+    private float serveDelay = 0.6f;
+
+    [Tooltip("Maximum height above the serve's highest endpoint.")]
+    [SerializeField, Min(0.05f)]
+    private float serveArcHeight = 1.25f;
 
     [Header("Player Shot")]
-    [SerializeField] private float playerShotArcHeight = 1.4f;
+    [Tooltip("Maximum height above the player shot's highest endpoint.")]
+    [SerializeField, Min(0.05f)]
+    private float playerShotArcHeight = 1.3f;
 
-    [Tooltip("Duration of a powerful player shot.")]
-    [SerializeField] private float minimumPlayerShotTime = 0.65f;
-
-    [Tooltip("Duration of a slow player shot.")]
-    [SerializeField] private float maximumPlayerShotTime = 0.95f;
-
-    [SerializeField] private float fullPowerSwingSpeed = 4f;
-    [SerializeField] private float upwardSwingArcInfluence = 0.15f;
-
-    [Header("Opponent Bounce And Hit")]
-    [SerializeField] private float opponentBounceToHitTime = 0.45f;
-    [SerializeField] private float opponentBounceToHitArcHeight = 0.45f;
+    [Tooltip("How much the racket's vertical velocity influences the assisted shot arc.")]
+    [SerializeField, Min(0f)]
+    private float upwardSwingArcInfluence = 0.12f;
 
     [Header("Opponent Return")]
-    [SerializeField] private float opponentReturnFlightTime = 1f;
-    [SerializeField] private float opponentReturnArcHeight = 1.5f;
+    [Tooltip("Maximum height above the AI return's highest endpoint.")]
+    [SerializeField, Min(0.05f)]
+    private float opponentReturnArcHeight = 1.3f;
 
-    [Header("AI Miss")]
-    [SerializeField] private float aiMissBounceTime = 0.55f;
-    [SerializeField] private float aiMissBounceHeight = 0.45f;
+    [Header("Physical Ground Bounce")]
+    [Tooltip("Height reached after the serve bounces on the player court.")]
+    [SerializeField, Min(0.05f)]
+    private float serveBounceHeight = 0.75f;
 
-    [Header("Player Miss")]
-    [Tooltip("Time the player has to hit the ball after it reaches them.")]
-    [SerializeField] private float waitingForHitDuration = 1.5f;
+    [Tooltip("Height reached after a player shot bounces on the opponent court.")]
+    [SerializeField, Min(0.05f)]
+    private float opponentBounceHeight = 0.65f;
 
-    [SerializeField] private float incomingReleaseVelocityMultiplier = 0.3f;
-    [SerializeField] private float outOfBoundsY = -2f;
+    [Tooltip("Percentage of horizontal speed retained after a ground bounce.")]
+    [SerializeField, Range(0.1f, 1.5f)]
+    private float horizontalBounceRetention = 0.82f;
+
+    [Tooltip("Prevents a bounce from appearing almost vertical.")]
+    [SerializeField, Min(0.05f)]
+    private float minimumBounceHorizontalSpeed = 1.6f;
+
+    [Tooltip("Limits excessively fast post-bounce movement.")]
+    [SerializeField, Min(0.1f)]
+    private float maximumBounceHorizontalSpeed = 7f;
+
+    [Tooltip("1 uses normal Unity gravity. 0.8 makes the bounce slightly floatier.")]
+    [SerializeField, Min(0.1f)]
+    private float bounceGravityMultiplier = 1f;
+
+    [Header("Miss Detection")]
+    [Tooltip("Safety timeout. Normal misses are detected when the ball reaches the ground.")]
+    [SerializeField, Min(0.5f)]
+    private float playerHitSafetyTimeout = 5f;
+
+    [SerializeField]
+    private float outOfBoundsY = -3f;
 
     [Header("Score UI")]
     [SerializeField] private TMP_Text playerScoreText;
     [SerializeField] private TMP_Text opponentScoreText;
+    [SerializeField] private TMP_Text highScoreText;
 
-    [Tooltip("Button near the player that calls StartGame().")]
+    [Tooltip("The button that calls StartGame().")]
     [SerializeField] private Button serveButton;
 
     [SerializeField] private string playerScorePrefix = "Player: ";
     [SerializeField] private string opponentScorePrefix = "AI: ";
+    [SerializeField] private string highScorePrefix = "High Score: ";
 
-    [SerializeField] private float pointEndDelay = 1f;
+    [Tooltip("PlayerPrefs key used to store the player's best score.")]
+    [SerializeField]
+    private string highScorePlayerPrefsKey = "PickleballPlayerHighScore";
+
+    [SerializeField, Min(0f)]
+    private float pointEndDelay = 1f;
 
     [Header("Audio")]
     [SerializeField] private AudioSource audioSource;
-
-    [Tooltip("Played when the player racket hits the ball.")]
     [SerializeField] private AudioClip playerHitClip;
-
-    [Tooltip("Played when the AI hits or serves the ball.")]
     [SerializeField] private AudioClip opponentHitClip;
-
-    [Tooltip("Played whenever the ball hits the court.")]
     [SerializeField] private AudioClip groundHitClip;
-
     [SerializeField] private AudioClip playerScoreClip;
     [SerializeField] private AudioClip opponentScoreClip;
 
@@ -187,44 +223,64 @@ public class BallController : MonoBehaviour
     [SerializeField] private BallState state = BallState.Idle;
     [SerializeField] private int playerScore;
     [SerializeField] private int opponentScore;
-    [SerializeField] private bool serveBounceCompleted;
-    [SerializeField] private bool returnBounceCompleted;
+    [SerializeField] private int highScore;
+
+    [SerializeField] private bool firstServeBounceCompleted;
+    [SerializeField] private bool firstReturnBounceCompleted;
     [SerializeField] private bool opponentWillMiss;
-    [SerializeField] private Vector3 currentBallTarget;
-    [SerializeField] private Vector3 trackedRacketVelocity;
+
+    [SerializeField] private Vector3 currentTarget;
+    [SerializeField] private Vector3 currentVelocity;
+    [SerializeField] private Vector3 currentBounceDirection;
 
     public BallState CurrentState => state;
     public int PlayerScore => playerScore;
     public int OpponentScore => opponentScore;
+    public int HighScore => highScore;
 
     private LastHitter lastHitter = LastHitter.None;
 
     private bool gameStarted;
     private bool roundActive;
-    private bool isGuidedFlight;
 
+    // Assisted projectile movement.
+    private bool guidedFlightActive;
     private Vector3 guidedStart;
-    private Vector3 guidedControl;
-    private Vector3 guidedEnd;
-
-    private float guidedTimer;
+    private Vector3 guidedTarget;
+    private Vector3 guidedInitialVelocity;
+    private Vector3 guidedGravity;
     private float guidedDuration;
+    private float guidedTimer;
 
-    private bool moveOpponentDuringFlight;
-    private Vector3 opponentMoveStart;
-    private Vector3 opponentMoveTarget;
+    // Physical movement after a bounce or near the player.
+    private bool physicalFlightActive;
+    private Vector3 previousPhysicsPosition;
+    private float ignoreGroundUntil;
+    private float playerHitDeadline;
 
-    private Vector3 previousRacketPosition;
-    private bool racketPositionInitialized;
+    // True only after the opponent's serve has already made its required
+    // first bounce on the player side.
+    private bool incomingBallAlreadyBouncedOnPlayerSide;
 
-    private float waitingForHitDeadline;
-    private float nextAllowedRacketHitTime;
+    // Prevents duplicate collider/plane landing events.
+    private float lastGroundResolutionTime;
     private float nextAllowedGroundSoundTime;
 
+    // Opponent movement.
+    private bool moveOpponentDuringGuidedFlight;
+    private Vector3 opponentMoveStart;
+    private Vector3 opponentMoveTarget;
     private float opponentRestingY;
+
+    // Racket tracking.
+    private Vector3 previousRacketPosition;
+    private bool racketPositionInitialized;
+    private Vector3 trackedRacketVelocity;
+    private float nextAllowedRacketHitTime;
 
     private Coroutine serveRoutine;
     private Coroutine pointOverRoutine;
+    private Coroutine opponentHitRoutine;
 
     private readonly Collider[] racketDetectionResults = new Collider[16];
 
@@ -239,7 +295,7 @@ public class BallController : MonoBehaviour
         if (rb == null)
         {
             Debug.LogError(
-                "BallController requires a Rigidbody on the ball.",
+                "BallController requires a Rigidbody on the Ball GameObject.",
                 this
             );
 
@@ -248,6 +304,7 @@ public class BallController : MonoBehaviour
         }
 
         rb.interpolation = RigidbodyInterpolation.Interpolate;
+        rb.collisionDetectionMode = CollisionDetectionMode.ContinuousSpeculative;
         rb.useGravity = false;
         rb.isKinematic = true;
 
@@ -275,6 +332,7 @@ public class BallController : MonoBehaviour
         SetBallAtServePoint();
         ResetOpponentPosition();
 
+        LoadHighScore();
         UpdateScoreUI();
         ShowServeButton(true);
     }
@@ -292,22 +350,31 @@ public class BallController : MonoBehaviour
             return;
         }
 
-        if (isGuidedFlight)
+        if (guidedFlightActive)
         {
-            MoveAlongGuidedTrajectory();
+            MoveGuidedProjectile();
             return;
         }
 
-        if (state != BallState.WaitingForPlayerHit)
+        if (physicalFlightActive)
+        {
+            ApplyCustomGravity();
+            CheckPhysicalGroundCrossing();
+
+            if (!roundActive)
+                return;
+        }
+
+        if (!CanPlayerHitCurrentState())
             return;
 
         if (TryDetectNearbyRacket())
             return;
 
-        if (waitingForHitDeadline > 0f &&
-            Time.time >= waitingForHitDeadline)
+        if (playerHitDeadline > 0f &&
+            Time.time >= playerHitDeadline)
         {
-            PlayerMissedBall();
+            PlayerMissedValidBall();
         }
     }
 
@@ -317,53 +384,32 @@ public class BallController : MonoBehaviour
 
         valid &= ValidateReference(servePoint, "Serve Point");
         valid &= ValidateReference(opponentCube, "Opponent Cube");
-
-        valid &= ValidateReference(
-            opponentCornerA,
-            "Opponent Corner A"
-        );
-
-        valid &= ValidateReference(
-            opponentCornerB,
-            "Opponent Corner B"
-        );
-
-        valid &= ValidateReference(
-            playerCornerA,
-            "Player Corner A"
-        );
-
-        valid &= ValidateReference(
-            playerCornerB,
-            "Player Corner B"
-        );
+        valid &= ValidateReference(opponentCornerA, "Opponent Corner A");
+        valid &= ValidateReference(opponentCornerB, "Opponent Corner B");
+        valid &= ValidateReference(playerCornerA, "Player Corner A");
+        valid &= ValidateReference(playerCornerB, "Player Corner B");
 
         return valid;
     }
 
-    private bool ValidateReference(
-        Object reference,
-        string fieldName)
+    private bool ValidateReference(Object reference, string fieldName)
     {
         if (reference != null)
             return true;
 
         Debug.LogError(
-            fieldName + " is not assigned.",
+            fieldName + " is not assigned in BallController.",
             this
         );
 
         return false;
     }
 
-    #region Public Game Functions
+    #region Public Controls
 
     /// <summary>
-    /// Assign this function to the serve button.
-    ///
-    /// On the first click, it begins the game.
-    /// After a point, it begins the next rally.
-    /// Scores are preserved between rallies.
+    /// Assign this function to the Start/Serve button.
+    /// It starts the first rally or begins the next rally after a point.
     /// </summary>
     public void StartGame()
     {
@@ -375,24 +421,34 @@ public class BallController : MonoBehaviour
             gameStarted = true;
             playerScore = 0;
             opponentScore = 0;
-
             UpdateScoreUI();
         }
 
-        if (pointOverRoutine != null)
-        {
-            StopCoroutine(pointOverRoutine);
-            pointOverRoutine = null;
-        }
+        StopGameplayCoroutines();
 
         ShowServeButton(false);
         StartOpponentServe();
     }
 
+    /// <summary>
+    /// Resets the current match score but preserves the saved high score.
+    /// </summary>
     public void ResetScores()
     {
         playerScore = 0;
         opponentScore = 0;
+        UpdateScoreUI();
+    }
+
+    /// <summary>
+    /// Deletes the saved high score.
+    /// </summary>
+    public void ResetHighScore()
+    {
+        highScore = 0;
+
+        PlayerPrefs.DeleteKey(highScorePlayerPrefsKey);
+        PlayerPrefs.Save();
 
         UpdateScoreUI();
     }
@@ -403,9 +459,6 @@ public class BallController : MonoBehaviour
 
     private void StartOpponentServe()
     {
-        if (serveRoutine != null)
-            StopCoroutine(serveRoutine);
-
         serveRoutine = StartCoroutine(OpponentServeRoutine());
     }
 
@@ -414,19 +467,20 @@ public class BallController : MonoBehaviour
         roundActive = true;
         state = BallState.Resetting;
 
-        serveBounceCompleted = false;
-        returnBounceCompleted = false;
+        firstServeBounceCompleted = false;
+        firstReturnBounceCompleted = false;
         opponentWillMiss = false;
+        incomingBallAlreadyBouncedOnPlayerSide = false;
 
-        waitingForHitDeadline = 0f;
-        nextAllowedRacketHitTime = 0f;
-
-        isGuidedFlight = false;
         lastHitter = LastHitter.Opponent;
+
+        guidedFlightActive = false;
+        physicalFlightActive = false;
+        playerHitDeadline = 0f;
+        nextAllowedRacketHitTime = 0f;
 
         StopBallPhysics();
         SetBallAtServePoint();
-
         MoveOpponentInstantlyToXZ(servePoint.position);
 
         if (serveDelay > 0f)
@@ -436,17 +490,15 @@ public class BallController : MonoBehaviour
             yield break;
 
         PlayOpponentHitSound();
-
-        Vector3 randomPlayerGroundPosition =
-            GetRandomPlayerGroundPosition();
-
         onRallyStarted?.Invoke();
 
-        StartGuidedFlight(
-            randomPlayerGroundPosition,
-            serveFlightTime,
+        Vector3 serveLanding =
+            GetRandomPlayerGroundPosition();
+
+        StartGuidedProjectile(
+            serveLanding,
             serveArcHeight,
-            BallState.OpponentServeToGround
+            BallState.OpponentServeToPlayerGround
         );
 
         serveRoutine = null;
@@ -454,199 +506,159 @@ public class BallController : MonoBehaviour
 
     #endregion
 
-    #region Random Court Positions
+    #region Assisted Projectile Movement
 
-    private Vector3 GetRandomPlayerGroundPosition()
-    {
-        return GetRandomPositionBetweenCorners(
-            playerCornerA,
-            playerCornerB,
-            ballGroundOffset
-        );
-    }
-
-    private Vector3 GetRandomOpponentGroundPosition()
-    {
-        return GetRandomPositionBetweenCorners(
-            opponentCornerA,
-            opponentCornerB,
-            ballGroundOffset
-        );
-    }
-
-    private Vector3 GetPlayerReceivePosition(
-        Vector3 groundPosition)
-    {
-        float groundY = GetCourtGroundY(
-            playerCornerA,
-            playerCornerB
-        );
-
-        return new Vector3(
-            groundPosition.x,
-            groundY + playerReceiveHeight,
-            groundPosition.z
-        );
-    }
-
-    private Vector3 GetOpponentHitPosition(
-        Vector3 groundPosition)
-    {
-        float groundY = GetCourtGroundY(
-            opponentCornerA,
-            opponentCornerB
-        );
-
-        return new Vector3(
-            groundPosition.x,
-            groundY + opponentBallHitHeight,
-            groundPosition.z
-        );
-    }
-
-    private Vector3 GetOpponentCubePosition(
-        Vector3 targetPosition)
-    {
-        return new Vector3(
-            targetPosition.x,
-            opponentRestingY,
-            targetPosition.z
-        );
-    }
-
-    private Vector3 GetRandomPositionBetweenCorners(
-        Transform cornerA,
-        Transform cornerB,
-        float heightOffset)
-    {
-        Vector3 positionA = cornerA.position;
-        Vector3 positionB = cornerB.position;
-
-        float minimumX = Mathf.Min(positionA.x, positionB.x);
-        float maximumX = Mathf.Max(positionA.x, positionB.x);
-
-        float minimumZ = Mathf.Min(positionA.z, positionB.z);
-        float maximumZ = Mathf.Max(positionA.z, positionB.z);
-
-        float groundY = GetCourtGroundY(
-            cornerA,
-            cornerB
-        );
-
-        return new Vector3(
-            Random.Range(minimumX, maximumX),
-            groundY + heightOffset,
-            Random.Range(minimumZ, maximumZ)
-        );
-    }
-
-    private float GetCourtGroundY(
-        Transform cornerA,
-        Transform cornerB)
-    {
-        return (
-            cornerA.position.y +
-            cornerB.position.y
-        ) * 0.5f;
-    }
-
-    #endregion
-
-    #region Guided Ball Movement
-
-    private void StartGuidedFlight(
+    /// <summary>
+    /// Calculates a gravity-based projectile that reaches an exact target.
+    /// This is used for assisted serves and returns.
+    /// </summary>
+    private void StartGuidedProjectile(
         Vector3 target,
-        float duration,
         float arcHeight,
         BallState newState,
         bool animateOpponent = false,
-        Vector3 newOpponentTarget = default)
+        Vector3 opponentTarget = default(Vector3))
     {
         StopBallPhysics();
 
         state = newState;
-        isGuidedFlight = true;
+        guidedFlightActive = true;
+        physicalFlightActive = false;
 
         guidedStart = rb.position;
-        guidedEnd = target;
-
-        currentBallTarget = target;
-
-        guidedDuration = Mathf.Max(0.1f, duration);
+        guidedTarget = target;
+        currentTarget = target;
         guidedTimer = 0f;
 
-        guidedControl = CalculateControlPoint(
-            guidedStart,
-            guidedEnd,
-            arcHeight
-        );
+        float gravityMagnitude =
+            Mathf.Max(0.1f, Mathf.Abs(Physics.gravity.y));
 
-        moveOpponentDuringFlight =
+        guidedGravity =
+            Vector3.down * gravityMagnitude;
+
+        float apexY =
+            Mathf.Max(guidedStart.y, guidedTarget.y) +
+            Mathf.Max(0.05f, arcHeight);
+
+        if (netTop != null)
+        {
+            apexY = Mathf.Max(
+                apexY,
+                netTop.position.y + netClearance
+            );
+        }
+
+        float rise =
+            Mathf.Max(0.01f, apexY - guidedStart.y);
+
+        float fall =
+            Mathf.Max(0.01f, apexY - guidedTarget.y);
+
+        float upwardSpeed =
+            Mathf.Sqrt(2f * gravityMagnitude * rise);
+
+        float timeUp =
+            upwardSpeed / gravityMagnitude;
+
+        float timeDown =
+            Mathf.Sqrt(2f * fall / gravityMagnitude);
+
+        guidedDuration =
+            Mathf.Max(0.1f, timeUp + timeDown);
+
+        Vector3 horizontalDisplacement =
+            guidedTarget - guidedStart;
+
+        horizontalDisplacement.y = 0f;
+
+        Vector3 horizontalVelocity =
+            horizontalDisplacement / guidedDuration;
+
+        guidedInitialVelocity =
+            horizontalVelocity +
+            Vector3.up * upwardSpeed;
+
+        moveOpponentDuringGuidedFlight =
             animateOpponent &&
             opponentCube != null;
 
-        if (moveOpponentDuringFlight)
+        if (moveOpponentDuringGuidedFlight)
         {
-            opponentMoveStart = opponentCube.position;
-            opponentMoveTarget = newOpponentTarget;
+            opponentMoveStart =
+                opponentCube.position;
+
+            opponentMoveTarget =
+                opponentTarget;
         }
     }
 
-    private void MoveAlongGuidedTrajectory()
+    private void MoveGuidedProjectile()
     {
         guidedTimer += Time.fixedDeltaTime;
 
-        float t = Mathf.Clamp01(
-            guidedTimer / guidedDuration
-        );
+        float time =
+            Mathf.Min(guidedTimer, guidedDuration);
 
-        Vector3 previousBallPosition = rb.position;
+        float normalizedTime =
+            Mathf.Clamp01(time / guidedDuration);
 
-        Vector3 nextBallPosition =
-            CalculateQuadraticBezier(
-                guidedStart,
-                guidedControl,
-                guidedEnd,
-                t
-            );
+        Vector3 previousPosition =
+            rb.position;
+
+        Vector3 nextPosition =
+            guidedStart +
+            guidedInitialVelocity * time +
+            0.5f *
+            guidedGravity *
+            time *
+            time;
+
+        currentVelocity =
+            guidedInitialVelocity +
+            guidedGravity * time;
 
         if (CanPlayerHitCurrentState() &&
             TryDetectRacketBetween(
-                previousBallPosition,
-                nextBallPosition
+                previousPosition,
+                nextPosition
             ))
         {
             return;
         }
 
-        rb.MovePosition(nextBallPosition);
+        rb.MovePosition(nextPosition);
 
-        if (moveOpponentDuringFlight)
+        if (moveOpponentDuringGuidedFlight)
         {
-            float smoothT = Mathf.SmoothStep(
-                0f,
-                1f,
-                t
-            );
+            float smoothTime =
+                Mathf.SmoothStep(
+                    0f,
+                    1f,
+                    normalizedTime
+                );
 
-            opponentCube.position = Vector3.Lerp(
-                opponentMoveStart,
-                opponentMoveTarget,
-                smoothT
-            );
+            opponentCube.position =
+                Vector3.Lerp(
+                    opponentMoveStart,
+                    opponentMoveTarget,
+                    smoothTime
+                );
         }
 
-        if (t < 1f)
+        if (guidedTimer < guidedDuration)
             return;
 
-        rb.position = guidedEnd;
-        transform.position = guidedEnd;
+        rb.position = guidedTarget;
+        transform.position = guidedTarget;
 
-        if (moveOpponentDuringFlight)
-            opponentCube.position = opponentMoveTarget;
+        if (moveOpponentDuringGuidedFlight)
+        {
+            opponentCube.position =
+                opponentMoveTarget;
+        }
 
-        isGuidedFlight = false;
-        moveOpponentDuringFlight = false;
+        guidedFlightActive = false;
+        moveOpponentDuringGuidedFlight = false;
 
         GuidedFlightFinished();
     }
@@ -655,137 +667,511 @@ public class BallController : MonoBehaviour
     {
         switch (state)
         {
-            case BallState.OpponentServeToGround:
-
-                HandleServeGroundBounce();
-                break;
-
-            case BallState.ServeBounceToPlayer:
-
-                ReleaseBallNearPlayer();
+            case BallState.OpponentServeToPlayerGround:
+                ResolveServeLanding();
                 break;
 
             case BallState.PlayerShotToOpponentGround:
-
-                HandleOpponentGroundBounce();
-                break;
-
-            case BallState.OpponentBounceToHit:
-
-                OpponentHitsBall();
-                break;
-
-            case BallState.PlayerShotToOpponentHit:
-
-                OpponentHitsBall();
+                ResolvePlayerShotLanding();
                 break;
 
             case BallState.OpponentReturnToPlayer:
-
-                ReleaseBallNearPlayer();
-                break;
-
-            case BallState.AIMissBounce:
-
-                PlayGroundHitSound();
-                AwardPoint(ScoringSide.Player);
+                ReleaseIncomingBallToPlayer();
                 break;
         }
     }
 
-    private Vector3 CalculateControlPoint(
-        Vector3 start,
-        Vector3 end,
-        float arcHeight)
+    private Vector3 GetGuidedEndVelocity()
     {
-        Vector3 control = (start + end) * 0.5f;
-
-        float desiredApex =
-            Mathf.Max(start.y, end.y) +
-            Mathf.Max(0.1f, arcHeight);
-
-        if (netTop != null)
-        {
-            desiredApex = Mathf.Max(
-                desiredApex,
-                netTop.position.y + netClearance
-            );
-        }
-
-        control.y =
-            (2f * desiredApex) -
-            (0.5f * (start.y + end.y));
-
-        return control;
-    }
-
-    private static Vector3 CalculateQuadraticBezier(
-        Vector3 start,
-        Vector3 control,
-        Vector3 end,
-        float t)
-    {
-        float inverseT = 1f - t;
-
         return
-            inverseT * inverseT * start +
-            2f * inverseT * t * control +
-            t * t * end;
+            guidedInitialVelocity +
+            guidedGravity * guidedDuration;
     }
 
     #endregion
 
-    #region Two-Bounce Rule
+    #region Court Landing And In/Out Scoring
 
-    private void HandleServeGroundBounce()
+    private void ResolveServeLanding()
     {
-        if (state != BallState.OpponentServeToGround)
-            return;
-
-        PlayGroundHitSound();
-
-        serveBounceCompleted = true;
-
-        Vector3 playerReceivePosition =
-            GetPlayerReceivePosition(guidedEnd);
-
-        StartGuidedFlight(
-            playerReceivePosition,
-            serveBounceFlightTime,
-            serveBounceArcHeight,
-            BallState.ServeBounceToPlayer
-        );
-    }
-
-    private void HandleOpponentGroundBounce()
-    {
-        if (state != BallState.PlayerShotToOpponentGround)
-            return;
-
-        PlayGroundHitSound();
-
-        // This is the second required bounce:
-        // 1. Opponent serve bounced on the player side.
-        // 2. Player return bounced on the opponent side.
-        returnBounceCompleted = true;
-
-        Vector3 groundPosition = guidedEnd;
-
-        if (opponentWillMiss)
+        if (!roundActive ||
+            GroundResolutionWasRecent())
         {
-            StartAIMissBounce(groundPosition);
             return;
         }
 
-        Vector3 opponentHitPosition =
-            GetOpponentHitPosition(groundPosition);
+        MarkGroundResolved();
 
-        StartGuidedFlight(
-            opponentHitPosition,
-            opponentBounceToHitTime,
-            opponentBounceToHitArcHeight,
-            BallState.OpponentBounceToHit
+        Vector3 landingPosition =
+            rb.position;
+
+        if (!IsInsideCourt(
+                landingPosition,
+                playerCornerA,
+                playerCornerB))
+        {
+            // The AI served outside the player's court.
+            AwardPoint(ScoringSide.Player);
+            return;
+        }
+
+        PlayGroundHitSound();
+
+        firstServeBounceCompleted = true;
+        incomingBallAlreadyBouncedOnPlayerSide = true;
+
+        Vector3 incomingVelocity =
+            GetGuidedEndVelocity();
+
+        StartPhysicalBounce(
+            incomingVelocity,
+            serveBounceHeight,
+            BallState.WaitingForPlayerHit
         );
+
+        playerHitDeadline =
+            Time.time + playerHitSafetyTimeout;
+    }
+
+    private void ResolvePlayerShotLanding()
+    {
+        if (!roundActive ||
+            GroundResolutionWasRecent())
+        {
+            return;
+        }
+
+        MarkGroundResolved();
+
+        Vector3 landingPosition =
+            rb.position;
+
+        if (!IsInsideCourt(
+                landingPosition,
+                opponentCornerA,
+                opponentCornerB))
+        {
+            // The player's shot landed outside the opponent court.
+            AwardPoint(ScoringSide.Opponent);
+            return;
+        }
+
+        PlayGroundHitSound();
+
+        firstReturnBounceCompleted = true;
+
+        Vector3 incomingVelocity =
+            GetGuidedEndVelocity();
+
+        if (opponentWillMiss)
+        {
+            StartPhysicalBounce(
+                incomingVelocity,
+                opponentBounceHeight,
+                BallState.AIMissLive
+            );
+
+            MoveOpponentToMissPosition(
+                landingPosition
+            );
+
+            return;
+        }
+
+        StartOpponentPhysicalBounce(
+            incomingVelocity
+        );
+    }
+
+    private void ResolvePlayerSideGroundContact()
+    {
+        if (!roundActive ||
+            GroundResolutionWasRecent())
+        {
+            return;
+        }
+
+        MarkGroundResolved();
+        PlayGroundHitSound();
+
+        bool landedInside =
+            IsInsideCourt(
+                rb.position,
+                playerCornerA,
+                playerCornerB
+            );
+
+        /*
+         * If the serve already bounced once, this is the serve's
+         * second bounce and the player missed it.
+         *
+         * If it is a normal AI return, an outside landing gives the
+         * point to the player; an inside landing means the player missed.
+         */
+        if (incomingBallAlreadyBouncedOnPlayerSide)
+        {
+            // This is the serve's second bounce: the player missed it.
+            AwardPoint(ScoringSide.Opponent);
+            return;
+        }
+
+        // This is the first landing of a normal AI return.
+        if (landedInside)
+            AwardPoint(ScoringSide.Opponent);
+        else
+            AwardPoint(ScoringSide.Player);
+    }
+
+    private bool IsInsideCourt(
+        Vector3 worldPosition,
+        Transform cornerA,
+        Transform cornerB)
+    {
+        float minimumX =
+            Mathf.Min(
+                cornerA.position.x,
+                cornerB.position.x
+            ) + courtBoundsPadding;
+
+        float maximumX =
+            Mathf.Max(
+                cornerA.position.x,
+                cornerB.position.x
+            ) - courtBoundsPadding;
+
+        float minimumZ =
+            Mathf.Min(
+                cornerA.position.z,
+                cornerB.position.z
+            ) + courtBoundsPadding;
+
+        float maximumZ =
+            Mathf.Max(
+                cornerA.position.z,
+                cornerB.position.z
+            ) - courtBoundsPadding;
+
+        return
+            worldPosition.x >= minimumX &&
+            worldPosition.x <= maximumX &&
+            worldPosition.z >= minimumZ &&
+            worldPosition.z <= maximumZ;
+    }
+
+    #endregion
+
+    #region Physical Bounce And Gravity
+
+    /// <summary>
+    /// Starts a real Rigidbody bounce.
+    /// Horizontal direction is copied from the incoming velocity and is
+    /// never replaced with a random X/Z target.
+    /// </summary>
+    private void StartPhysicalBounce(
+        Vector3 incomingVelocity,
+        float bounceHeight,
+        BallState newState)
+    {
+        StopOpponentHitRoutine();
+
+        guidedFlightActive = false;
+        physicalFlightActive = true;
+        state = newState;
+
+        Vector3 horizontalVelocity =
+            new Vector3(
+                incomingVelocity.x,
+                0f,
+                incomingVelocity.z
+            );
+
+        Vector3 horizontalDirection =
+            horizontalVelocity.normalized;
+
+        if (horizontalDirection.sqrMagnitude < 0.0001f)
+        {
+            horizontalDirection =
+                guidedTarget - guidedStart;
+
+            horizontalDirection.y = 0f;
+            horizontalDirection.Normalize();
+        }
+
+        if (horizontalDirection.sqrMagnitude < 0.0001f)
+            horizontalDirection = transform.forward;
+
+        currentBounceDirection =
+            horizontalDirection;
+
+        float horizontalSpeed =
+            horizontalVelocity.magnitude *
+            horizontalBounceRetention;
+
+        horizontalSpeed =
+            Mathf.Clamp(
+                horizontalSpeed,
+                minimumBounceHorizontalSpeed,
+                maximumBounceHorizontalSpeed
+            );
+
+        float gravityMagnitude =
+            Mathf.Max(
+                0.1f,
+                Mathf.Abs(Physics.gravity.y) *
+                bounceGravityMultiplier
+            );
+
+        float upwardSpeed =
+            Mathf.Sqrt(
+                2f *
+                gravityMagnitude *
+                Mathf.Max(0.05f, bounceHeight)
+            );
+
+        Vector3 bounceVelocity =
+            horizontalDirection *
+            horizontalSpeed +
+            Vector3.up *
+            upwardSpeed;
+
+        rb.isKinematic = false;
+        rb.useGravity = false;
+
+        SetRigidbodyVelocity(
+            rb,
+            bounceVelocity
+        );
+
+        rb.angularVelocity =
+            Vector3.zero;
+
+        previousPhysicsPosition =
+            rb.position;
+
+        currentVelocity =
+            bounceVelocity;
+
+        // Avoid immediately processing the same contact that started the bounce.
+        ignoreGroundUntil =
+            Time.time + 0.1f;
+    }
+
+    private void StartOpponentPhysicalBounce(
+        Vector3 incomingVelocity)
+    {
+        StartPhysicalBounce(
+            incomingVelocity,
+            opponentBounceHeight,
+            BallState.OpponentBounceLive
+        );
+
+        Vector3 bounceVelocity =
+            ReadRigidbodyVelocity(rb);
+
+        float gravityMagnitude =
+            Mathf.Max(
+                0.1f,
+                Mathf.Abs(Physics.gravity.y) *
+                bounceGravityMultiplier
+            );
+
+        float opponentGroundY =
+            GetCourtGroundY(
+                opponentCornerA,
+                opponentCornerB
+            ) + ballGroundOffset;
+
+        float desiredHitY =
+            opponentGroundY +
+            opponentBallHitHeight;
+
+        float verticalDifference =
+            desiredHitY - rb.position.y;
+
+        float verticalSpeed =
+            bounceVelocity.y;
+
+        float discriminant =
+            verticalSpeed * verticalSpeed -
+            2f *
+            gravityMagnitude *
+            verticalDifference;
+
+        float hitDelay;
+
+        if (discriminant >= 0f)
+        {
+            // Descending root: the AI meets the ball after the apex.
+            hitDelay =
+                (
+                    verticalSpeed +
+                    Mathf.Sqrt(discriminant)
+                ) /
+                gravityMagnitude;
+        }
+        else
+        {
+            // Requested hit height is above the apex.
+            hitDelay =
+                verticalSpeed /
+                gravityMagnitude;
+        }
+
+        float totalBounceDuration =
+            2f *
+            verticalSpeed /
+            gravityMagnitude;
+
+        hitDelay =
+            Mathf.Clamp(
+                hitDelay,
+                0.12f,
+                Mathf.Max(
+                    0.15f,
+                    totalBounceDuration - 0.08f
+                )
+            );
+
+        Vector3 predictedHitPosition =
+            rb.position +
+            bounceVelocity * hitDelay +
+            0.5f *
+            Vector3.down *
+            gravityMagnitude *
+            hitDelay *
+            hitDelay;
+
+        predictedHitPosition.y =
+            desiredHitY;
+
+        opponentHitRoutine =
+            StartCoroutine(
+                MoveOpponentAndHitRoutine(
+                    predictedHitPosition,
+                    hitDelay
+                )
+            );
+    }
+
+    private void ApplyCustomGravity()
+    {
+        if (!physicalFlightActive ||
+            rb.isKinematic)
+        {
+            return;
+        }
+
+        Vector3 velocity =
+            ReadRigidbodyVelocity(rb);
+
+        velocity +=
+            Physics.gravity *
+            bounceGravityMultiplier *
+            Time.fixedDeltaTime;
+
+        SetRigidbodyVelocity(
+            rb,
+            velocity
+        );
+
+        currentVelocity =
+            velocity;
+    }
+
+    private void CheckPhysicalGroundCrossing()
+    {
+        if (!physicalFlightActive)
+            return;
+
+        Vector3 currentPosition =
+            rb.position;
+
+        if (Time.time < ignoreGroundUntil)
+        {
+            previousPhysicsPosition =
+                currentPosition;
+
+            return;
+        }
+
+        float groundY =
+            GetExpectedPhysicalGroundY();
+
+        float contactHeight =
+            groundY +
+            ballGroundOffset +
+            groundDetectionTolerance;
+
+        Vector3 velocity =
+            ReadRigidbodyVelocity(rb);
+
+        bool crossedGround =
+            previousPhysicsPosition.y >
+                contactHeight &&
+            currentPosition.y <=
+                contactHeight &&
+            velocity.y <= 0f;
+
+        previousPhysicsPosition =
+            currentPosition;
+
+        if (!crossedGround)
+            return;
+
+        ResolvePhysicalGroundContact();
+    }
+
+    private float GetExpectedPhysicalGroundY()
+    {
+        switch (state)
+        {
+            case BallState.OpponentBounceLive:
+            case BallState.AIMissLive:
+                return GetCourtGroundY(
+                    opponentCornerA,
+                    opponentCornerB
+                );
+
+            case BallState.WaitingForPlayerHit:
+            default:
+                return GetCourtGroundY(
+                    playerCornerA,
+                    playerCornerB
+                );
+        }
+    }
+
+    private void ResolvePhysicalGroundContact()
+    {
+        if (!roundActive)
+            return;
+
+        switch (state)
+        {
+            case BallState.WaitingForPlayerHit:
+                ResolvePlayerSideGroundContact();
+                break;
+
+            case BallState.AIMissLive:
+                if (GroundResolutionWasRecent())
+                    return;
+
+                MarkGroundResolved();
+                PlayGroundHitSound();
+                AwardPoint(ScoringSide.Player);
+                break;
+
+            case BallState.OpponentBounceLive:
+                if (GroundResolutionWasRecent())
+                    return;
+
+                MarkGroundResolved();
+                PlayGroundHitSound();
+
+                // AI failed to reach a valid in-bounds ball before its next bounce.
+                AwardPoint(ScoringSide.Player);
+                break;
+        }
     }
 
     #endregion
@@ -795,124 +1181,88 @@ public class BallController : MonoBehaviour
     private void PlayerHitsBall(
         Collider racketCollider)
     {
-        if (!roundActive)
+        if (!roundActive ||
+            !CanPlayerHitCurrentState())
+        {
             return;
+        }
 
-        if (!CanPlayerHitCurrentState())
+        if (Time.time <
+            nextAllowedRacketHitTime)
+        {
             return;
-
-        if (Time.time < nextAllowedRacketHitTime)
-            return;
+        }
 
         nextAllowedRacketHitTime =
             Time.time + racketHitCooldown;
 
-        isGuidedFlight = false;
-        waitingForHitDeadline = 0f;
+        StopOpponentHitRoutine();
+
+        guidedFlightActive = false;
+        physicalFlightActive = false;
+        playerHitDeadline = 0f;
 
         Vector3 racketVelocity =
-            GetRacketHitVelocity(racketCollider);
+            GetRacketHitVelocity(
+                racketCollider
+            );
 
         StopBallPhysics();
 
         if (racketSweetSpot != null)
         {
-            rb.position = racketSweetSpot.position;
-            transform.position = racketSweetSpot.position;
+            rb.position =
+                racketSweetSpot.position;
+
+            transform.position =
+                racketSweetSpot.position;
         }
 
         PlayPlayerHitSound();
         onPlayerHit?.Invoke();
 
-        lastHitter = LastHitter.Player;
+        lastHitter =
+            LastHitter.Player;
+
+        incomingBallAlreadyBouncedOnPlayerSide = false;
 
         opponentWillMiss =
-            Random.value < opponentMissChance;
+            Random.value <
+            opponentMissChance;
 
-        Vector3 randomOpponentGroundPosition =
+        Vector3 opponentLanding =
             GetRandomOpponentGroundPosition();
 
-        float swingStrength = Mathf.InverseLerp(
-            0f,
-            fullPowerSwingSpeed,
-            racketVelocity.magnitude
-        );
-
-        float shotDuration = Mathf.Lerp(
-            maximumPlayerShotTime,
-            minimumPlayerShotTime,
-            swingStrength
-        );
-
-        float upwardArcChange = Mathf.Clamp(
-            racketVelocity.y *
-            upwardSwingArcInfluence,
-            -0.3f,
-            1f
-        );
-
-        float shotArc = Mathf.Max(
-            0.6f,
-            playerShotArcHeight + upwardArcChange
-        );
-
-        /*
-         * Before the two-bounce rule is complete,
-         * the player's first return must bounce.
-         *
-         * If the AI is going to miss, the ball also
-         * travels toward the ground so the miss is visible.
-         */
-        if (!returnBounceCompleted ||
-            opponentWillMiss)
-        {
-            Vector3 opponentMovementTarget;
-
-            if (opponentWillMiss)
-            {
-                opponentMovementTarget =
-                    GetOpponentMissPosition(
-                        randomOpponentGroundPosition
-                    );
-            }
-            else
-            {
-                opponentMovementTarget =
-                    GetOpponentCubePosition(
-                        randomOpponentGroundPosition
-                    );
-            }
-
-            StartGuidedFlight(
-                randomOpponentGroundPosition,
-                shotDuration,
-                shotArc,
-                BallState.PlayerShotToOpponentGround,
-                true,
-                opponentMovementTarget
+        float upwardArcChange =
+            Mathf.Clamp(
+                racketVelocity.y *
+                upwardSwingArcInfluence,
+                -0.25f,
+                0.8f
             );
 
-            return;
-        }
-
-        // After the two-bounce rule, the AI may volley.
-        Vector3 opponentHitPosition =
-            GetOpponentHitPosition(
-                randomOpponentGroundPosition
+        float shotArc =
+            Mathf.Max(
+                0.35f,
+                playerShotArcHeight +
+                upwardArcChange
             );
 
-        Vector3 opponentCubeTarget =
-            GetOpponentCubePosition(
-                opponentHitPosition
-            );
+        Vector3 opponentMovementTarget =
+            opponentWillMiss
+                ? GetOpponentMissPosition(
+                    opponentLanding
+                )
+                : GetOpponentCubePosition(
+                    opponentLanding
+                );
 
-        StartGuidedFlight(
-            opponentHitPosition,
-            shotDuration,
+        StartGuidedProjectile(
+            opponentLanding,
             shotArc,
-            BallState.PlayerShotToOpponentHit,
+            BallState.PlayerShotToOpponentGround,
             true,
-            opponentCubeTarget
+            opponentMovementTarget
         );
     }
 
@@ -937,7 +1287,9 @@ public class BallController : MonoBehaviour
     {
         if (racketTransform == null)
         {
-            trackedRacketVelocity = Vector3.zero;
+            trackedRacketVelocity =
+                Vector3.zero;
+
             return;
         }
 
@@ -946,16 +1298,24 @@ public class BallController : MonoBehaviour
             previousRacketPosition =
                 racketTransform.position;
 
-            racketPositionInitialized = true;
-            trackedRacketVelocity = Vector3.zero;
+            racketPositionInitialized =
+                true;
+
+            trackedRacketVelocity =
+                Vector3.zero;
 
             return;
         }
 
         trackedRacketVelocity =
-            (racketTransform.position -
-             previousRacketPosition) /
-            Mathf.Max(Time.fixedDeltaTime, 0.0001f);
+            (
+                racketTransform.position -
+                previousRacketPosition
+            ) /
+            Mathf.Max(
+                Time.fixedDeltaTime,
+                0.0001f
+            );
 
         previousRacketPosition =
             racketTransform.position;
@@ -963,133 +1323,299 @@ public class BallController : MonoBehaviour
 
     #endregion
 
-    #region Opponent Hit And Miss
+    #region Opponent Hit And Return
+
+    private IEnumerator MoveOpponentAndHitRoutine(
+        Vector3 predictedHitPosition,
+        float duration)
+    {
+        Vector3 startPosition =
+            opponentCube.position;
+
+        Vector3 targetPosition =
+            new Vector3(
+                predictedHitPosition.x,
+                opponentRestingY,
+                predictedHitPosition.z
+            );
+
+        float timer = 0f;
+
+        while (timer < duration)
+        {
+            if (!roundActive ||
+                state != BallState.OpponentBounceLive)
+            {
+                yield break;
+            }
+
+            timer += Time.deltaTime;
+
+            float normalizedTime =
+                Mathf.Clamp01(
+                    timer / duration
+                );
+
+            float smoothTime =
+                Mathf.SmoothStep(
+                    0f,
+                    1f,
+                    normalizedTime
+                );
+
+            opponentCube.position =
+                Vector3.Lerp(
+                    startPosition,
+                    targetPosition,
+                    smoothTime
+                );
+
+            yield return null;
+        }
+
+        if (!roundActive ||
+            state != BallState.OpponentBounceLive)
+        {
+            yield break;
+        }
+
+        opponentCube.position =
+            targetPosition;
+
+        // Small correction keeps the assisted hit reliable.
+        if (Vector3.Distance(
+                rb.position,
+                predictedHitPosition) > 0.2f)
+        {
+            rb.position =
+                predictedHitPosition;
+
+            transform.position =
+                predictedHitPosition;
+        }
+
+        OpponentHitsBall();
+
+        opponentHitRoutine = null;
+    }
 
     private void OpponentHitsBall()
     {
         if (!roundActive)
             return;
 
-        if (opponentWillMiss)
-        {
-            StartAIMissBounce(rb.position);
-            return;
-        }
+        physicalFlightActive = false;
+        guidedFlightActive = false;
+
+        StopBallPhysics();
 
         PlayOpponentHitSound();
         onOpponentHit?.Invoke();
 
-        lastHitter = LastHitter.Opponent;
+        lastHitter =
+            LastHitter.Opponent;
 
-        Vector3 randomPlayerGroundPosition =
+        Vector3 playerGroundPosition =
             GetRandomPlayerGroundPosition();
 
-        Vector3 playerReceivePosition =
-            GetPlayerReceivePosition(
-                randomPlayerGroundPosition
+        Vector3 playerReceiveTarget =
+            new Vector3(
+                playerGroundPosition.x,
+                GetCourtGroundY(
+                    playerCornerA,
+                    playerCornerB
+                ) + playerReceiveHeight,
+                playerGroundPosition.z
             );
 
-        StartGuidedFlight(
-            playerReceivePosition,
-            opponentReturnFlightTime,
+        StartGuidedProjectile(
+            playerReceiveTarget,
             opponentReturnArcHeight,
             BallState.OpponentReturnToPlayer
         );
     }
 
-    private void StartAIMissBounce(
-        Vector3 startingGroundPosition)
+    private void ReleaseIncomingBallToPlayer()
     {
-        Vector3 missLandingPosition =
-            GetRandomOpponentGroundPosition();
+        state =
+            BallState.WaitingForPlayerHit;
 
-        StartGuidedFlight(
-            missLandingPosition,
-            aiMissBounceTime,
-            aiMissBounceHeight,
-            BallState.AIMissBounce
+        incomingBallAlreadyBouncedOnPlayerSide = false;
+
+        guidedFlightActive = false;
+        physicalFlightActive = true;
+
+        rb.isKinematic = false;
+        rb.useGravity = false;
+
+        Vector3 endVelocity =
+            GetGuidedEndVelocity();
+
+        SetRigidbodyVelocity(
+            rb,
+            endVelocity
         );
+
+        rb.angularVelocity =
+            Vector3.zero;
+
+        previousPhysicsPosition =
+            rb.position;
+
+        currentVelocity =
+            endVelocity;
+
+        ignoreGroundUntil =
+            Time.time + 0.05f;
+
+        playerHitDeadline =
+            Time.time + playerHitSafetyTimeout;
+    }
+
+    private void MoveOpponentToMissPosition(
+        Vector3 ballLanding)
+    {
+        if (opponentCube == null)
+            return;
+
+        opponentCube.position =
+            GetOpponentMissPosition(
+                ballLanding
+            );
     }
 
     private Vector3 GetOpponentMissPosition(
         Vector3 ballTarget)
     {
-        Vector3 randomWrongPosition =
+        Vector3 randomPosition =
             GetRandomOpponentGroundPosition();
 
-        Vector2 ballXZ = new Vector2(
-            ballTarget.x,
-            ballTarget.z
-        );
+        Vector2 ballXZ =
+            new Vector2(
+                ballTarget.x,
+                ballTarget.z
+            );
 
-        Vector2 wrongXZ = new Vector2(
-            randomWrongPosition.x,
-            randomWrongPosition.z
-        );
+        Vector2 randomXZ =
+            new Vector2(
+                randomPosition.x,
+                randomPosition.z
+            );
 
-        if (Vector2.Distance(ballXZ, wrongXZ) <
-            opponentMissDistance)
-        {
-            Vector2 direction =
-                wrongXZ - ballXZ;
+        Vector2 direction =
+            randomXZ - ballXZ;
 
-            if (direction.sqrMagnitude < 0.01f)
-                direction = Vector2.right;
+        if (direction.sqrMagnitude < 0.01f)
+            direction = Vector2.right;
 
-            direction.Normalize();
+        direction.Normalize();
 
-            wrongXZ =
-                ballXZ +
-                direction * opponentMissDistance;
-        }
+        Vector2 missXZ =
+            ballXZ +
+            direction *
+            Mathf.Max(
+                opponentMissDistance,
+                0.1f
+            );
 
         return new Vector3(
-            wrongXZ.x,
+            missXZ.x,
             opponentRestingY,
-            wrongXZ.y
+            missXZ.y
         );
     }
 
     #endregion
 
-    #region Player Receiving And Missing
+    #region Court Position Helpers
 
-    private void ReleaseBallNearPlayer()
+    private Vector3 GetRandomPlayerGroundPosition()
     {
-        state = BallState.WaitingForPlayerHit;
-        isGuidedFlight = false;
-
-        rb.isKinematic = false;
-        rb.useGravity = true;
-
-        Vector3 endingVelocity =
-            2f * (guidedEnd - guidedControl) /
-            Mathf.Max(guidedDuration, 0.1f);
-
-        endingVelocity *=
-            incomingReleaseVelocityMultiplier;
-
-        SetRigidbodyVelocity(
-            rb,
-            endingVelocity
+        return GetRandomPositionBetweenCorners(
+            playerCornerA,
+            playerCornerB,
+            ballGroundOffset
         );
-
-        waitingForHitDeadline =
-            Time.time + waitingForHitDuration;
     }
 
-    private void PlayerMissedBall()
+    private Vector3 GetRandomOpponentGroundPosition()
     {
-        if (!roundActive)
-            return;
+        return GetRandomPositionBetweenCorners(
+            opponentCornerA,
+            opponentCornerB,
+            ballGroundOffset
+        );
+    }
 
-        PlayGroundHitSound();
-        AwardPoint(ScoringSide.Opponent);
+    private Vector3 GetRandomPositionBetweenCorners(
+        Transform cornerA,
+        Transform cornerB,
+        float heightOffset)
+    {
+        float minimumX =
+            Mathf.Min(
+                cornerA.position.x,
+                cornerB.position.x
+            );
+
+        float maximumX =
+            Mathf.Max(
+                cornerA.position.x,
+                cornerB.position.x
+            );
+
+        float minimumZ =
+            Mathf.Min(
+                cornerA.position.z,
+                cornerB.position.z
+            );
+
+        float maximumZ =
+            Mathf.Max(
+                cornerA.position.z,
+                cornerB.position.z
+            );
+
+        return new Vector3(
+            Random.Range(
+                minimumX,
+                maximumX
+            ),
+            GetCourtGroundY(
+                cornerA,
+                cornerB
+            ) + heightOffset,
+            Random.Range(
+                minimumZ,
+                maximumZ
+            )
+        );
+    }
+
+    private float GetCourtGroundY(
+        Transform cornerA,
+        Transform cornerB)
+    {
+        return
+            (
+                cornerA.position.y +
+                cornerB.position.y
+            ) * 0.5f;
+    }
+
+    private Vector3 GetOpponentCubePosition(
+        Vector3 targetPosition)
+    {
+        return new Vector3(
+            targetPosition.x,
+            opponentRestingY,
+            targetPosition.z
+        );
     }
 
     #endregion
 
-    #region Assisted Racket Detection
+    #region Racket Detection
 
     private bool TryDetectRacketBetween(
         Vector3 start,
@@ -1097,7 +1623,8 @@ public class BallController : MonoBehaviour
     {
         int detectedCount;
 
-        if ((end - start).sqrMagnitude < 0.0001f)
+        if ((end - start).sqrMagnitude <
+            0.0001f)
         {
             detectedCount =
                 Physics.OverlapSphereNonAlloc(
@@ -1121,7 +1648,9 @@ public class BallController : MonoBehaviour
                 );
         }
 
-        for (int i = 0; i < detectedCount; i++)
+        for (int i = 0;
+             i < detectedCount;
+             i++)
         {
             Collider detectedCollider =
                 racketDetectionResults[i];
@@ -1136,7 +1665,10 @@ public class BallController : MonoBehaviour
                 continue;
             }
 
-            PlayerHitsBall(detectedCollider);
+            PlayerHitsBall(
+                detectedCollider
+            );
+
             return true;
         }
 
@@ -1154,7 +1686,9 @@ public class BallController : MonoBehaviour
                 QueryTriggerInteraction.Collide
             );
 
-        for (int i = 0; i < detectedCount; i++)
+        for (int i = 0;
+             i < detectedCount;
+             i++)
         {
             Collider detectedCollider =
                 racketDetectionResults[i];
@@ -1169,21 +1703,35 @@ public class BallController : MonoBehaviour
                 continue;
             }
 
-            PlayerHitsBall(detectedCollider);
+            PlayerHitsBall(
+                detectedCollider
+            );
+
             return true;
         }
 
         return false;
     }
 
+    private bool CanPlayerHitCurrentState()
+    {
+        return
+            state ==
+                BallState.WaitingForPlayerHit ||
+            state ==
+                BallState.OpponentReturnToPlayer;
+    }
+
     #endregion
 
-    #region Collision Detection
+    #region Collision Handling
 
     private void OnCollisionEnter(
         Collision collision)
     {
-        HandleCollider(collision.collider);
+        HandleCollider(
+            collision.collider
+        );
     }
 
     private void OnTriggerEnter(
@@ -1195,18 +1743,31 @@ public class BallController : MonoBehaviour
     private void HandleCollider(
         Collider other)
     {
-        if (!roundActive || other == null)
+        if (!roundActive ||
+            other == null)
+        {
             return;
+        }
 
-        if (ColliderHasTag(other, racketTag))
+        if (ColliderHasTag(
+                other,
+                racketTag))
         {
             PlayerHitsBall(other);
             return;
         }
 
-        if (ColliderHasTag(other, netTag))
+        if (ColliderHasTag(
+                other,
+                netTag))
         {
             HandleNetFault();
+            return;
+        }
+
+        if (Time.time <
+            ignoreGroundUntil)
+        {
             return;
         }
 
@@ -1214,11 +1775,21 @@ public class BallController : MonoBehaviour
                 other,
                 playerGroundTag))
         {
-            if (state == BallState.WaitingForPlayerHit ||
-                state == BallState.ServeBounceToPlayer ||
-                state == BallState.OpponentReturnToPlayer)
+            if (state ==
+                BallState.OpponentServeToPlayerGround)
             {
-                PlayerMissedBall();
+                rb.position =
+                    guidedTarget;
+
+                transform.position =
+                    guidedTarget;
+
+                ResolveServeLanding();
+            }
+            else if (state ==
+                     BallState.WaitingForPlayerHit)
+            {
+                ResolvePlayerSideGroundContact();
             }
 
             return;
@@ -1231,8 +1802,33 @@ public class BallController : MonoBehaviour
             if (state ==
                 BallState.PlayerShotToOpponentGround)
             {
-                isGuidedFlight = false;
-                HandleOpponentGroundBounce();
+                rb.position =
+                    guidedTarget;
+
+                transform.position =
+                    guidedTarget;
+
+                ResolvePlayerShotLanding();
+            }
+            else if (state ==
+                     BallState.AIMissLive)
+            {
+                if (!GroundResolutionWasRecent())
+                {
+                    MarkGroundResolved();
+                    PlayGroundHitSound();
+                    AwardPoint(ScoringSide.Player);
+                }
+            }
+            else if (state ==
+                     BallState.OpponentBounceLive)
+            {
+                if (!GroundResolutionWasRecent())
+                {
+                    MarkGroundResolved();
+                    PlayGroundHitSound();
+                    AwardPoint(ScoringSide.Player);
+                }
             }
         }
     }
@@ -1242,13 +1838,18 @@ public class BallController : MonoBehaviour
         if (!roundActive)
             return;
 
-        if (lastHitter == LastHitter.Player)
+        if (lastHitter ==
+            LastHitter.Player)
         {
-            AwardPoint(ScoringSide.Opponent);
+            AwardPoint(
+                ScoringSide.Opponent
+            );
         }
         else
         {
-            AwardPoint(ScoringSide.Player);
+            AwardPoint(
+                ScoringSide.Player
+            );
         }
     }
 
@@ -1256,8 +1857,11 @@ public class BallController : MonoBehaviour
         Collider targetCollider,
         string requiredTag)
     {
-        if (targetCollider.CompareTag(requiredTag))
+        if (targetCollider.CompareTag(
+                requiredTag))
+        {
             return true;
+        }
 
         if (targetCollider.attachedRigidbody != null &&
             targetCollider.attachedRigidbody.CompareTag(
@@ -1266,14 +1870,25 @@ public class BallController : MonoBehaviour
             return true;
         }
 
-        return targetCollider.transform.root.CompareTag(
-            requiredTag
-        );
+        return
+            targetCollider
+                .transform
+                .root
+                .CompareTag(requiredTag);
     }
 
     #endregion
 
     #region Scoring
+
+    private void PlayerMissedValidBall()
+    {
+        if (!roundActive)
+            return;
+
+        PlayGroundHitSound();
+        AwardPoint(ScoringSide.Opponent);
+    }
 
     private void AwardPoint(
         ScoringSide scoringSide)
@@ -1282,16 +1897,22 @@ public class BallController : MonoBehaviour
             return;
 
         roundActive = false;
-        isGuidedFlight = false;
+        guidedFlightActive = false;
+        physicalFlightActive = false;
+        playerHitDeadline = 0f;
 
-        waitingForHitDeadline = 0f;
-        state = BallState.PointOver;
+        state =
+            BallState.PointOver;
 
+        StopGameplayCoroutines();
         StopBallPhysics();
 
-        if (scoringSide == ScoringSide.Player)
+        if (scoringSide ==
+            ScoringSide.Player)
         {
             playerScore++;
+
+            UpdateHighScore();
 
             PlayClip(playerScoreClip);
             onPlayerScored?.Invoke();
@@ -1306,40 +1927,72 @@ public class BallController : MonoBehaviour
 
         UpdateScoreUI();
 
-        if (pointOverRoutine != null)
-            StopCoroutine(pointOverRoutine);
-
         pointOverRoutine =
-            StartCoroutine(PointOverRoutine());
+            StartCoroutine(
+                PointOverRoutine()
+            );
     }
 
     private void AwardPointBasedOnLastHitter()
     {
-        if (lastHitter == LastHitter.Player)
+        if (lastHitter ==
+            LastHitter.Player)
         {
-            AwardPoint(ScoringSide.Opponent);
+            AwardPoint(
+                ScoringSide.Opponent
+            );
         }
         else
         {
-            AwardPoint(ScoringSide.Player);
+            AwardPoint(
+                ScoringSide.Player
+            );
         }
     }
 
     private IEnumerator PointOverRoutine()
     {
         if (pointEndDelay > 0f)
-            yield return new WaitForSeconds(pointEndDelay);
+        {
+            yield return new WaitForSeconds(
+                pointEndDelay
+            );
+        }
 
         SetBallAtServePoint();
         ResetOpponentPosition();
 
-        state = BallState.Idle;
+        state =
+            BallState.Idle;
 
-        // The user must click the button to begin
-        // the opponent's next serve.
         ShowServeButton(true);
 
         pointOverRoutine = null;
+    }
+
+    private void LoadHighScore()
+    {
+        highScore =
+            PlayerPrefs.GetInt(
+                highScorePlayerPrefsKey,
+                0
+            );
+    }
+
+    private void UpdateHighScore()
+    {
+        if (playerScore <= highScore)
+            return;
+
+        highScore =
+            playerScore;
+
+        PlayerPrefs.SetInt(
+            highScorePlayerPrefsKey,
+            highScore
+        );
+
+        PlayerPrefs.Save();
     }
 
     private void UpdateScoreUI()
@@ -1347,20 +2000,34 @@ public class BallController : MonoBehaviour
         if (playerScoreText != null)
         {
             playerScoreText.text =
-                playerScorePrefix + playerScore;
+                playerScorePrefix +
+                playerScore;
         }
 
         if (opponentScoreText != null)
         {
             opponentScoreText.text =
-                opponentScorePrefix + opponentScore;
+                opponentScorePrefix +
+                opponentScore;
+        }
+
+        if (highScoreText != null)
+        {
+            highScoreText.text =
+                highScorePrefix +
+                highScore;
         }
     }
 
-    private void ShowServeButton(bool show)
+    private void ShowServeButton(
+        bool show)
     {
         if (serveButton != null)
-            serveButton.gameObject.SetActive(show);
+        {
+            serveButton.gameObject.SetActive(
+                show
+            );
+        }
     }
 
     #endregion
@@ -1374,18 +2041,20 @@ public class BallController : MonoBehaviour
 
     private void PlayOpponentHitSound()
     {
-        if (opponentHitClip != null)
-            PlayClip(opponentHitClip);
-        else
-            PlayClip(playerHitClip);
+        PlayClip(
+            opponentHitClip != null
+                ? opponentHitClip
+                : playerHitClip
+        );
     }
 
     private void PlayGroundHitSound()
     {
-        // Prevents duplicate sounds when a guided endpoint and
-        // a collider event happen almost simultaneously.
-        if (Time.time < nextAllowedGroundSoundTime)
+        if (Time.time <
+            nextAllowedGroundSoundTime)
+        {
             return;
+        }
 
         nextAllowedGroundSoundTime =
             Time.time + 0.08f;
@@ -1394,10 +2063,14 @@ public class BallController : MonoBehaviour
         onGroundHit?.Invoke();
     }
 
-    private void PlayClip(AudioClip clip)
+    private void PlayClip(
+        AudioClip clip)
     {
-        if (audioSource == null || clip == null)
+        if (audioSource == null ||
+            clip == null)
+        {
             return;
+        }
 
         audioSource.PlayOneShot(clip);
     }
@@ -1412,11 +2085,12 @@ public class BallController : MonoBehaviour
         if (opponentCube == null)
             return;
 
-        opponentCube.position = new Vector3(
-            position.x,
-            opponentRestingY,
-            position.z
-        );
+        opponentCube.position =
+            new Vector3(
+                position.x,
+                opponentRestingY,
+                position.z
+            );
     }
 
     private void ResetOpponentPosition()
@@ -1436,19 +2110,45 @@ public class BallController : MonoBehaviour
 
     #endregion
 
-    #region Rigidbody Helpers
+    #region Ground Resolution Helpers
+
+    private bool GroundResolutionWasRecent()
+    {
+        return
+            Time.time -
+            lastGroundResolutionTime <
+            0.08f;
+    }
+
+    private void MarkGroundResolved()
+    {
+        lastGroundResolutionTime =
+            Time.time;
+    }
+
+    #endregion
+
+    #region Rigidbody And Coroutine Helpers
 
     private void SetBallAtServePoint()
     {
         StopBallPhysics();
 
-        rb.position = servePoint.position;
-        transform.position = servePoint.position;
-        transform.rotation = servePoint.rotation;
+        rb.position =
+            servePoint.position;
+
+        transform.position =
+            servePoint.position;
+
+        transform.rotation =
+            servePoint.rotation;
     }
 
     private void StopBallPhysics()
     {
+        guidedFlightActive = false;
+        physicalFlightActive = false;
+
         if (!rb.isKinematic)
         {
             SetRigidbodyVelocity(
@@ -1456,11 +2156,41 @@ public class BallController : MonoBehaviour
                 Vector3.zero
             );
 
-            rb.angularVelocity = Vector3.zero;
+            rb.angularVelocity =
+                Vector3.zero;
         }
 
         rb.useGravity = false;
         rb.isKinematic = true;
+    }
+
+    private void StopGameplayCoroutines()
+    {
+        if (serveRoutine != null)
+        {
+            StopCoroutine(serveRoutine);
+            serveRoutine = null;
+        }
+
+        if (pointOverRoutine != null)
+        {
+            StopCoroutine(pointOverRoutine);
+            pointOverRoutine = null;
+        }
+
+        StopOpponentHitRoutine();
+    }
+
+    private void StopOpponentHitRoutine()
+    {
+        if (opponentHitRoutine == null)
+            return;
+
+        StopCoroutine(
+            opponentHitRoutine
+        );
+
+        opponentHitRoutine = null;
     }
 
     private static Vector3 ReadRigidbodyVelocity(
@@ -1484,16 +2214,6 @@ public class BallController : MonoBehaviour
 #endif
     }
 
-    private bool CanPlayerHitCurrentState()
-    {
-        // The player cannot hit OpponentServeToGround,
-        // because the serve must bounce first.
-        return
-            state == BallState.ServeBounceToPlayer ||
-            state == BallState.OpponentReturnToPlayer ||
-            state == BallState.WaitingForPlayerHit;
-    }
-
     #endregion
 
     #region Gizmos
@@ -1501,14 +2221,14 @@ public class BallController : MonoBehaviour
     private void OnDrawGizmosSelected()
     {
         DrawCourtArea(
-            opponentCornerA,
-            opponentCornerB,
+            playerCornerA,
+            playerCornerB,
             ballGroundOffset
         );
 
         DrawCourtArea(
-            playerCornerA,
-            playerCornerB,
+            opponentCornerA,
+            opponentCornerB,
             ballGroundOffset
         );
 
@@ -1523,8 +2243,14 @@ public class BallController : MonoBehaviour
         if (Application.isPlaying)
         {
             Gizmos.DrawWireSphere(
-                currentBallTarget,
+                currentTarget,
                 0.1f
+            );
+
+            Gizmos.DrawLine(
+                rb.position,
+                rb.position +
+                currentBounceDirection
             );
         }
     }
@@ -1534,26 +2260,51 @@ public class BallController : MonoBehaviour
         Transform cornerB,
         float heightOffset)
     {
-        if (cornerA == null || cornerB == null)
+        if (cornerA == null ||
+            cornerB == null)
+        {
             return;
+        }
 
-        Vector3 positionA = cornerA.position;
-        Vector3 positionB = cornerB.position;
+        Vector3 positionA =
+            cornerA.position;
 
-        Vector3 center = new Vector3(
-            (positionA.x + positionB.x) * 0.5f,
-            ((positionA.y + positionB.y) * 0.5f) +
-            heightOffset,
-            (positionA.z + positionB.z) * 0.5f
+        Vector3 positionB =
+            cornerB.position;
+
+        Vector3 centre =
+            new Vector3(
+                (
+                    positionA.x +
+                    positionB.x
+                ) * 0.5f,
+                GetCourtGroundY(
+                    cornerA,
+                    cornerB
+                ) + heightOffset,
+                (
+                    positionA.z +
+                    positionB.z
+                ) * 0.5f
+            );
+
+        Vector3 size =
+            new Vector3(
+                Mathf.Abs(
+                    positionB.x -
+                    positionA.x
+                ),
+                0.02f,
+                Mathf.Abs(
+                    positionB.z -
+                    positionA.z
+                )
+            );
+
+        Gizmos.DrawWireCube(
+            centre,
+            size
         );
-
-        Vector3 size = new Vector3(
-            Mathf.Abs(positionB.x - positionA.x),
-            0.02f,
-            Mathf.Abs(positionB.z - positionA.z)
-        );
-
-        Gizmos.DrawWireCube(center, size);
     }
 
     #endregion
