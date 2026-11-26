@@ -29,7 +29,8 @@ public class BallController : MonoBehaviour
         // AI has returned the ball toward the player.
         OpponentReturnToPlayer,
 
-        PointOver
+        PointOver,
+        WaitingForPlayerServe
     }
 
     private enum LastHitter
@@ -99,7 +100,7 @@ public class BallController : MonoBehaviour
 
     [Tooltip("Positive values make the valid court slightly smaller. Negative values expand it.")]
     [SerializeField]
-    private float courtBoundsPadding = 0.01f;
+    private float courtBoundsPadding = 0f;
 
     [Header("Net")]
     [Tooltip("Optional point placed at the top-centre of the net.")]
@@ -186,9 +187,6 @@ public class BallController : MonoBehaviour
     [Tooltip("The button that calls StartGame().")]
     [SerializeField] private Button serveButton;
 
-    [SerializeField] private string playerScorePrefix = "Player: ";
-    [SerializeField] private string opponentScorePrefix = "AI: ";
-    [SerializeField] private string highScorePrefix = "High Score: ";
 
     [Tooltip("PlayerPrefs key used to store the player's best score.")]
     [SerializeField]
@@ -225,8 +223,6 @@ public class BallController : MonoBehaviour
     [SerializeField] private int opponentScore;
     [SerializeField] private int highScore;
 
-    [SerializeField] private bool firstServeBounceCompleted;
-    [SerializeField] private bool firstReturnBounceCompleted;
     [SerializeField] private bool opponentWillMiss;
 
     [SerializeField] private Vector3 currentTarget;
@@ -240,7 +236,20 @@ public class BallController : MonoBehaviour
 
     private LastHitter lastHitter = LastHitter.None;
 
+    private const int WinningScore = 11;
+    private const float KitchenFraction = 7f / 22f;
+    private ScoringSide server = ScoringSide.Player;
+    private bool playerServeInFlight;
+    private bool returnMustBounce;
+    private Camera playerCamera;
+    private Material kitchenLineMaterial;
+    private float volleyBalanceTime;
+    private Vector3 previousHeadPosition;
+    private ScoringSide? pendingRallyWinner;
+    private string pendingFaultMessage;
     private bool gameStarted;
+    private bool matchFinished;
+    private string matchMessage = "Singles vs Robot\n11 points • Win by 2";
     private bool roundActive;
 
     // Assisted projectile movement.
@@ -258,8 +267,7 @@ public class BallController : MonoBehaviour
     private float ignoreGroundUntil;
     private float playerHitDeadline;
 
-    // True only after the opponent's serve has already made its required
-    // first bounce on the player side.
+    // True after the incoming shot bounces once on the player side.
     private bool incomingBallAlreadyBouncedOnPlayerSide;
 
     // Prevents duplicate collider/plane landing events.
@@ -332,6 +340,8 @@ public class BallController : MonoBehaviour
         SetBallAtServePoint();
         ResetOpponentPosition();
 
+        playerCamera = Camera.main;
+        CreateKitchenLines();
         LoadHighScore();
         UpdateScoreUI();
         ShowServeButton(true);
@@ -341,12 +351,26 @@ public class BallController : MonoBehaviour
     {
         UpdateRacketVelocity();
 
+        if (roundActive && CheckVolleyMomentum())
+            return;
+
+        if (state == BallState.WaitingForPlayerServe)
+        {
+            TryDetectNearbyRacket();
+            return;
+        }
+
         if (!roundActive)
             return;
 
         if (rb.position.y < outOfBoundsY)
         {
-            AwardPointBasedOnLastHitter();
+            if (incomingBallAlreadyBouncedOnPlayerSide)
+                AwardPoint(ScoringSide.Opponent);
+            else if (state == BallState.OpponentBounceLive || state == BallState.AIMissLive)
+                AwardPoint(ScoringSide.Player);
+            else
+                AwardPointBasedOnLastHitter();
             return;
         }
 
@@ -413,12 +437,14 @@ public class BallController : MonoBehaviour
     /// </summary>
     public void StartGame()
     {
-        if (roundActive)
+        if (roundActive || state == BallState.PointOver)
             return;
 
-        if (!gameStarted)
+        if (!gameStarted || matchFinished)
         {
             gameStarted = true;
+            matchFinished = false;
+            server = ScoringSide.Player;
             playerScore = 0;
             opponentScore = 0;
             UpdateScoreUI();
@@ -427,7 +453,14 @@ public class BallController : MonoBehaviour
         StopGameplayCoroutines();
 
         ShowServeButton(false);
-        StartOpponentServe();
+        if (server == ScoringSide.Player)
+            PreparePlayerServe();
+        else
+        {
+            matchMessage = "Robot serving • Let it bounce";
+            UpdateScoreUI();
+            StartOpponentServe();
+        }
     }
 
     /// <summary>
@@ -457,6 +490,46 @@ public class BallController : MonoBehaviour
 
     #region Rally Start
 
+    private void PreparePlayerServe()
+    {
+        roundActive = true;
+        state = BallState.WaitingForPlayerServe;
+        StopBallPhysics();
+        ResetOpponentPosition();
+        playerServeInFlight = false;
+        incomingBallAlreadyBouncedOnPlayerSide = false;
+        returnMustBounce = false;
+        lastGroundResolutionTime = float.NegativeInfinity;
+        nextAllowedRacketHitTime = Time.time + serveDelay;
+        Vector3 head = GetPlayerPosition();
+        Vector3 ballPosition = new Vector3(head.x - 0.68f,
+            GetCourtGroundY(playerCornerA, playerCornerB) + 0.82f, head.z);
+        rb.position = ballPosition;
+        transform.position = ballPosition;
+        matchMessage = "Your serve • Tap the ball with your paddle";
+        UpdateScoreUI();
+    }
+
+    private void HitPlayerServe(Collider paddle)
+    {
+        if (Time.time < nextAllowedRacketHitTime || GetRacketHitVelocity(paddle).sqrMagnitude < 0.09f)
+            return;
+
+        playerServeInFlight = true;
+        returnMustBounce = true;
+        lastHitter = LastHitter.Player;
+        opponentWillMiss = false;
+        lastGroundResolutionTime = float.NegativeInfinity;
+        Vector3 target = GetServeLanding(opponentCornerA, opponentCornerB, playerScore, false);
+        StartGuidedProjectile(target, serveArcHeight, BallState.PlayerShotToOpponentGround,
+            true, GetOpponentCubePosition(target));
+        matchMessage = "Let the robot return bounce";
+        UpdateScoreUI();
+        PlayPlayerHitSound();
+        onPlayerHit?.Invoke();
+        onRallyStarted?.Invoke();
+    }
+
     private void StartOpponentServe()
     {
         serveRoutine = StartCoroutine(OpponentServeRoutine());
@@ -467,9 +540,10 @@ public class BallController : MonoBehaviour
         roundActive = true;
         state = BallState.Resetting;
 
-        firstServeBounceCompleted = false;
-        firstReturnBounceCompleted = false;
         opponentWillMiss = false;
+        playerServeInFlight = false;
+        returnMustBounce = false;
+        lastGroundResolutionTime = float.NegativeInfinity;
         incomingBallAlreadyBouncedOnPlayerSide = false;
 
         lastHitter = LastHitter.Opponent;
@@ -481,7 +555,14 @@ public class BallController : MonoBehaviour
 
         StopBallPhysics();
         SetBallAtServePoint();
-        MoveOpponentInstantlyToXZ(servePoint.position);
+        Vector3 serveOrigin = servePoint.position;
+        serveOrigin.x = Mathf.Min(opponentCornerA.position.x, opponentCornerB.position.x) - 0.35f;
+        float centerZ = (opponentCornerA.position.z + opponentCornerB.position.z) * 0.5f;
+        float halfWidth = Mathf.Abs(opponentCornerA.position.z - opponentCornerB.position.z) * 0.5f;
+        serveOrigin.z = centerZ + (opponentScore % 2 == 0 ? -1f : 1f) * halfWidth * 0.5f;
+        rb.position = serveOrigin;
+        transform.position = serveOrigin;
+        MoveOpponentInstantlyToXZ(serveOrigin);
 
         if (serveDelay > 0f)
             yield return new WaitForSeconds(serveDelay);
@@ -493,7 +574,7 @@ public class BallController : MonoBehaviour
         onRallyStarted?.Invoke();
 
         Vector3 serveLanding =
-            GetRandomPlayerGroundPosition();
+            GetServeLanding(playerCornerA, playerCornerB, opponentScore, true);
 
         StartGuidedProjectile(
             serveLanding,
@@ -617,7 +698,7 @@ public class BallController : MonoBehaviour
             guidedInitialVelocity +
             guidedGravity * time;
 
-        if (CanPlayerHitCurrentState() &&
+        if ((CanPlayerHitCurrentState() || state == BallState.OpponentServeToPlayerGround) &&
             TryDetectRacketBetween(
                 previousPosition,
                 nextPosition
@@ -705,10 +786,7 @@ public class BallController : MonoBehaviour
         Vector3 landingPosition =
             rb.position;
 
-        if (!IsInsideCourt(
-                landingPosition,
-                playerCornerA,
-                playerCornerB))
+        if (!IsLegalServeLanding(landingPosition, playerCornerA, playerCornerB, opponentScore, true))
         {
             // The AI served outside the player's court.
             AwardPoint(ScoringSide.Player);
@@ -717,7 +795,8 @@ public class BallController : MonoBehaviour
 
         PlayGroundHitSound();
 
-        firstServeBounceCompleted = true;
+        matchMessage = "Swing now";
+        UpdateScoreUI();
         incomingBallAlreadyBouncedOnPlayerSide = true;
 
         Vector3 incomingVelocity =
@@ -756,9 +835,17 @@ public class BallController : MonoBehaviour
             return;
         }
 
-        PlayGroundHitSound();
+        if (playerServeInFlight)
+        {
+            playerServeInFlight = false;
+            if (!IsLegalServeLanding(landingPosition, opponentCornerA, opponentCornerB, playerScore, false))
+            {
+                AwardPoint(ScoringSide.Opponent, "Serve fault • Aim beyond the kitchen");
+                return;
+            }
+        }
 
-        firstReturnBounceCompleted = true;
+        PlayGroundHitSound();
 
         Vector3 incomingVelocity =
             GetGuidedEndVelocity();
@@ -815,11 +902,18 @@ public class BallController : MonoBehaviour
             return;
         }
 
-        // This is the first landing of a normal AI return.
-        if (landedInside)
-            AwardPoint(ScoringSide.Opponent);
-        else
+        if (!landedInside)
+        {
             AwardPoint(ScoringSide.Player);
+            return;
+        }
+
+        incomingBallAlreadyBouncedOnPlayerSide = true;
+        returnMustBounce = false;
+        matchMessage = "Swing now";
+        UpdateScoreUI();
+        StartPhysicalBounce(ReadRigidbodyVelocity(rb), serveBounceHeight, BallState.WaitingForPlayerHit);
+        playerHitDeadline = Time.time + playerHitSafetyTimeout;
     }
 
     private bool IsInsideCourt(
@@ -831,25 +925,25 @@ public class BallController : MonoBehaviour
             Mathf.Min(
                 cornerA.position.x,
                 cornerB.position.x
-            ) + courtBoundsPadding;
+            ) + Mathf.Min(0f, courtBoundsPadding);
 
         float maximumX =
             Mathf.Max(
                 cornerA.position.x,
                 cornerB.position.x
-            ) - courtBoundsPadding;
+            ) - Mathf.Min(0f, courtBoundsPadding);
 
         float minimumZ =
             Mathf.Min(
                 cornerA.position.z,
                 cornerB.position.z
-            ) + courtBoundsPadding;
+            ) + Mathf.Min(0f, courtBoundsPadding);
 
         float maximumZ =
             Mathf.Max(
                 cornerA.position.z,
                 cornerB.position.z
-            ) - courtBoundsPadding;
+            ) - Mathf.Min(0f, courtBoundsPadding);
 
         return
             worldPosition.x >= minimumX &&
@@ -1181,6 +1275,20 @@ public class BallController : MonoBehaviour
     private void PlayerHitsBall(
         Collider racketCollider)
     {
+        if (roundActive && state == BallState.WaitingForPlayerServe)
+        {
+            HitPlayerServe(racketCollider);
+            return;
+        }
+
+        if (roundActive && (state == BallState.OpponentServeToPlayerGround ||
+            (returnMustBounce && (state == BallState.WaitingForPlayerHit || state == BallState.OpponentReturnToPlayer))))
+        {
+            AwardPoint(ScoringSide.Opponent, state == BallState.OpponentServeToPlayerGround
+                ? "Let the serve bounce" : "Let the first return bounce");
+            return;
+        }
+
         if (!roundActive ||
             !CanPlayerHitCurrentState())
         {
@@ -1193,8 +1301,20 @@ public class BallController : MonoBehaviour
             return;
         }
 
-        nextAllowedRacketHitTime =
-            Time.time + racketHitCooldown;
+        if (!incomingBallAlreadyBouncedOnPlayerSide)
+        {
+            Vector3 playerPosition = GetPlayerPosition();
+            if (IsInPlayerKitchen(playerPosition))
+            {
+                AwardPoint(ScoringSide.Opponent, "Kitchen fault • Volley behind the gold line");
+                return;
+            }
+
+            previousHeadPosition = playerPosition;
+            volleyBalanceTime = 0.25f;
+        }
+
+        nextAllowedRacketHitTime = Time.time + racketHitCooldown;
 
         StopOpponentHitRoutine();
 
@@ -1230,8 +1350,9 @@ public class BallController : MonoBehaviour
             Random.value <
             opponentMissChance;
 
-        Vector3 opponentLanding =
-            GetRandomOpponentGroundPosition();
+        Vector3 opponentLanding = GetAimedOpponentLanding(racketVelocity);
+        matchMessage = "Shot across • Get ready";
+        UpdateScoreUI();
 
         float upwardArcChange =
             Mathf.Clamp(
@@ -1415,19 +1536,10 @@ public class BallController : MonoBehaviour
         lastHitter =
             LastHitter.Opponent;
 
-        Vector3 playerGroundPosition =
-            GetRandomPlayerGroundPosition();
+        Vector3 playerReceiveTarget = GetRobotReturnTarget();
 
-        Vector3 playerReceiveTarget =
-            new Vector3(
-                playerGroundPosition.x,
-                GetCourtGroundY(
-                    playerCornerA,
-                    playerCornerB
-                ) + playerReceiveHeight,
-                playerGroundPosition.z
-            );
-
+        matchMessage = returnMustBounce ? "Let the first return bounce" : "Ready for the return";
+        UpdateScoreUI();
         StartGuidedProjectile(
             playerReceiveTarget,
             opponentReturnArcHeight,
@@ -1488,7 +1600,7 @@ public class BallController : MonoBehaviour
         Vector3 ballTarget)
     {
         Vector3 randomPosition =
-            GetRandomOpponentGroundPosition();
+            GetAimedOpponentLanding(Vector3.zero);
 
         Vector2 ballXZ =
             new Vector2(
@@ -1529,67 +1641,154 @@ public class BallController : MonoBehaviour
 
     #region Court Position Helpers
 
-    private Vector3 GetRandomPlayerGroundPosition()
+    private Vector3 GetServeLanding(Transform cornerA, Transform cornerB, int score, bool robotServing)
     {
-        return GetRandomPositionBetweenCorners(
-            playerCornerA,
-            playerCornerB,
-            ballGroundOffset
-        );
+        Vector3 a = cornerA.position;
+        Vector3 b = cornerB.position;
+        float baseline = robotServing ? Mathf.Max(a.x, b.x) : Mathf.Min(a.x, b.x);
+        float netSide = robotServing ? Mathf.Min(a.x, b.x) : Mathf.Max(a.x, b.x);
+        float centerZ = (a.z + b.z) * 0.5f;
+        float halfWidth = Mathf.Abs(a.z - b.z) * 0.5f;
+        float side = GetServeTargetSide(score, robotServing);
+        return new Vector3(Mathf.Lerp(netSide, baseline, 0.72f),
+            GetCourtGroundY(cornerA, cornerB) + ballGroundOffset,
+            centerZ + side * halfWidth * 0.5f);
     }
 
-    private Vector3 GetRandomOpponentGroundPosition()
+    private static float GetServeTargetSide(int score, bool robotServing)
     {
-        return GetRandomPositionBetweenCorners(
-            opponentCornerA,
-            opponentCornerB,
-            ballGroundOffset
-        );
+        return (score % 2 == 0) == robotServing ? 1f : -1f;
     }
 
-    private Vector3 GetRandomPositionBetweenCorners(
-        Transform cornerA,
-        Transform cornerB,
-        float heightOffset)
+    private bool IsLegalServeLanding(Vector3 position, Transform a, Transform b, int score, bool robotServing)
     {
-        float minimumX =
-            Mathf.Min(
-                cornerA.position.x,
-                cornerB.position.x
-            );
+        if (!IsInsideCourt(position, a, b))
+            return false;
 
-        float maximumX =
-            Mathf.Max(
-                cornerA.position.x,
-                cornerB.position.x
-            );
+        float nearX = robotServing ? Mathf.Min(a.position.x, b.position.x) : Mathf.Max(a.position.x, b.position.x);
+        float kitchenDepth = Mathf.Abs(a.position.x - b.position.x) * KitchenFraction;
+        float centerZ = (a.position.z + b.position.z) * 0.5f;
+        return Mathf.Abs(position.x - nearX) > kitchenDepth &&
+            (position.z - centerZ) * GetServeTargetSide(score, robotServing) >= 0f;
+    }
 
-        float minimumZ =
-            Mathf.Min(
-                cornerA.position.z,
-                cornerB.position.z
-            );
+    private Vector3 GetPlayerPosition()
+    {
+        if (playerCamera == null)
+            playerCamera = Camera.main;
+        return playerCamera != null ? playerCamera.transform.position : racketTransform != null
+            ? racketTransform.position : rb.position;
+    }
 
-        float maximumZ =
-            Mathf.Max(
-                cornerA.position.z,
-                cornerB.position.z
-            );
+    private void CreateKitchenLines()
+    {
+        Shader shader = Shader.Find("UI/Default");
+        if (shader == null)
+            return;
 
+        kitchenLineMaterial = new Material(shader);
+        CreateKitchenLine(playerCornerA, playerCornerB, true);
+        CreateKitchenLine(opponentCornerA, opponentCornerB, false);
+    }
+
+    private void CreateKitchenLine(Transform a, Transform b, bool playerSide)
+    {
+        float minX = Mathf.Min(a.position.x, b.position.x);
+        float maxX = Mathf.Max(a.position.x, b.position.x);
+        float nearX = playerSide ? minX : maxX;
+        float farX = Mathf.Lerp(nearX, playerSide ? maxX : minX, KitchenFraction);
+        float y = GetCourtGroundY(a, b) + 0.06f;
+        float minZ = Mathf.Min(a.position.z, b.position.z);
+        float maxZ = Mathf.Max(a.position.z, b.position.z);
+
+        var marker = new GameObject(playerSide ? "Player kitchen line" : "Robot kitchen line");
+        marker.transform.SetParent(transform.parent, false);
+        var line = marker.AddComponent<LineRenderer>();
+        line.sharedMaterial = kitchenLineMaterial;
+        line.alignment = LineAlignment.TransformZ;
+        marker.transform.rotation = Quaternion.Euler(90f, 0f, 0f);
+        line.startWidth = line.endWidth = 0.055f;
+        line.startColor = line.endColor = new Color(0.96f, 0.78f, 0.26f);
+        line.positionCount = 2;
+        line.SetPosition(0, new Vector3(farX, y, minZ));
+        line.SetPosition(1, new Vector3(farX, y, maxZ));
+        kitchenMarkers[playerSide ? 0 : 1] = marker;
+    }
+
+    private readonly GameObject[] kitchenMarkers = new GameObject[2];
+
+    private void OnDestroy()
+    {
+        foreach (GameObject marker in kitchenMarkers)
+            if (marker != null)
+                Destroy(marker);
+        if (kitchenLineMaterial != null)
+            Destroy(kitchenLineMaterial);
+    }
+
+    private bool IsInPlayerKitchen(Vector3 position)
+    {
+        Vector3 a = playerCornerA.position;
+        Vector3 b = playerCornerB.position;
+        float nearX = Mathf.Min(a.x, b.x);
+        float farEdge = Mathf.Lerp(nearX, Mathf.Max(a.x, b.x), KitchenFraction);
+        return position.x >= nearX && position.x <= farEdge &&
+            position.z >= Mathf.Min(a.z, b.z) && position.z <= Mathf.Max(a.z, b.z);
+    }
+
+    private bool CheckVolleyMomentum()
+    {
+        if (volleyBalanceTime <= 0f)
+            return false;
+
+        Vector3 position = GetPlayerPosition();
+        if (IsInPlayerKitchen(position))
+        {
+            volleyBalanceTime = 0f;
+            pendingRallyWinner = null;
+            AwardPoint(ScoringSide.Opponent, "Kitchen fault • Stay behind the line after a volley");
+            return true;
+        }
+
+        Vector3 movement = position - previousHeadPosition;
+        previousHeadPosition = position;
+        movement.y = 0f;
+        volleyBalanceTime = movement.magnitude > 0.3f * Time.fixedDeltaTime
+            ? 0.25f : volleyBalanceTime - Time.fixedDeltaTime;
+        if (volleyBalanceTime > 0f || !pendingRallyWinner.HasValue)
+            return false;
+
+        ScoringSide winner = pendingRallyWinner.Value;
+        pendingRallyWinner = null;
+        AwardPoint(winner, pendingFaultMessage);
+        return true;
+    }
+
+    private Vector3 GetRobotReturnTarget()
+    {
+        Vector3 head = GetPlayerPosition();
+        Vector3 a = playerCornerA.position;
+        Vector3 b = playerCornerB.position;
         return new Vector3(
-            Random.Range(
-                minimumX,
-                maximumX
-            ),
-            GetCourtGroundY(
-                cornerA,
-                cornerB
-            ) + heightOffset,
-            Random.Range(
-                minimumZ,
-                maximumZ
-            )
-        );
+            Mathf.Clamp(head.x - 1.4f, Mathf.Min(a.x, b.x) + 0.5f, Mathf.Max(a.x, b.x) - 0.5f),
+            GetCourtGroundY(playerCornerA, playerCornerB) + playerReceiveHeight,
+            Mathf.Clamp(head.z + Random.Range(-0.55f, 0.55f),
+                Mathf.Min(a.z, b.z) + 0.5f, Mathf.Max(a.z, b.z) - 0.5f));
+    }
+
+    private Vector3 GetAimedOpponentLanding(Vector3 swingVelocity)
+    {
+        Vector3 a = opponentCornerA.position;
+        Vector3 b = opponentCornerB.position;
+        Vector3 center = (a + b) * 0.5f;
+        Vector3 acrossNet = center - (playerCornerA.position + playerCornerB.position) * 0.5f;
+        acrossNet.y = 0f;
+        Vector3 sideways = Vector3.Cross(Vector3.up, acrossNet.normalized);
+        float aim = Mathf.Clamp(Vector3.Dot(swingVelocity, sideways) / 4f, -1f, 1f);
+        float width = Mathf.Abs(Vector3.Dot(b - a, sideways));
+        Vector3 landing = center + sideways * (aim * width * 0.38f);
+        landing.y = GetCourtGroundY(opponentCornerA, opponentCornerB) + ballGroundOffset;
+        return landing;
     }
 
     private float GetCourtGroundY(
@@ -1891,10 +2090,24 @@ public class BallController : MonoBehaviour
     }
 
     private void AwardPoint(
-        ScoringSide scoringSide)
+        ScoringSide scoringSide, string faultMessage = null)
     {
         if (!roundActive)
             return;
+
+        if (volleyBalanceTime > 0f)
+        {
+            if (!pendingRallyWinner.HasValue)
+            {
+                pendingRallyWinner = scoringSide;
+                pendingFaultMessage = faultMessage;
+                state = BallState.PointOver;
+                StopGameplayCoroutines();
+                StopBallPhysics();
+            }
+
+            return;
+        }
 
         roundActive = false;
         guidedFlightActive = false;
@@ -1907,8 +2120,10 @@ public class BallController : MonoBehaviour
         StopGameplayCoroutines();
         StopBallPhysics();
 
-        if (scoringSide ==
-            ScoringSide.Player)
+        bool scored = scoringSide == server;
+        if (!scored)
+            server = scoringSide;
+        else if (scoringSide == ScoringSide.Player)
         {
             playerScore++;
 
@@ -1925,6 +2140,15 @@ public class BallController : MonoBehaviour
             onOpponentScored?.Invoke();
         }
 
+        matchFinished = Mathf.Max(playerScore, opponentScore) >= WinningScore &&
+            Mathf.Abs(playerScore - opponentScore) >= 2;
+        string result = scored
+            ? (server == ScoringSide.Player ? "Your point" : "Robot point")
+            : "Side out";
+        string nextServer = server == ScoringSide.Player ? "Your serve" : "Robot serves";
+        matchMessage = matchFinished
+            ? (playerScore > opponentScore ? "You win! • Play again" : "Robot wins • Play again")
+            : (faultMessage ?? result) + "\n" + nextServer;
         UpdateScoreUI();
 
         pointOverRoutine =
@@ -2000,22 +2224,21 @@ public class BallController : MonoBehaviour
         if (playerScoreText != null)
         {
             playerScoreText.text =
-                playerScorePrefix +
+                (server == ScoringSide.Player && !matchFinished ? "YOU · SERVE\n" : "YOU\n") +
                 playerScore;
         }
 
         if (opponentScoreText != null)
         {
             opponentScoreText.text =
-                opponentScorePrefix +
+                (server == ScoringSide.Opponent && !matchFinished ? "ROBOT · SERVE\n" : "ROBOT\n") +
                 opponentScore;
         }
 
         if (highScoreText != null)
         {
             highScoreText.text =
-                highScorePrefix +
-                highScore;
+                matchMessage;
         }
     }
 

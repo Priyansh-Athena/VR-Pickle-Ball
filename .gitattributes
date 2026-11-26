@@ -148,3 +148,54 @@ Packages/packages-lock.json linguist-generated
 *.skel.bytes            lfs
 # Exceptions for .asset files such as lightning pre-baking
 LightingData.asset     binary
+
+# Unity assets already committed as YAML. Keep existing LFS assets in LFS.
+"Assets/Readme.asset" !filter !diff unity-yaml
+"Assets/Resources/ImmersiveDebuggerSettings.asset" !filter !diff unity-yaml
+"Assets/Resources/InputActions.asset" !filter !diff unity-yaml
+"Assets/Resources/MetaXRAcousticMaterialMapping.asset" !filter !diff unity-yaml
+"Assets/Resources/MetaXRAcousticSettings.asset" !filter !diff unity-yaml
+"Assets/Resources/MetaXRAudioSettings.asset" !filter !diff unity-yaml
+"Assets/Resources/OVRPlatformToolSettings.asset" !filter !diff unity-yaml
+"Assets/Resources/OculusRuntimeSettings.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/AffordanceThemes/ControllerPokeSphereScale.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/AffordanceThemes/HighlightInteractionColor.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/AffordanceThemes/HighlightStrengthInteraction.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/AffordanceThemes/PokeSphereColor.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/AffordanceThemes/PokeSphereInteraction.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/DemoSceneAssets/AffordanceThemes/InteractionColor.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/DemoSceneAssets/Materials/MaterialPipelineHandler.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/DemoSceneAssets/Settings/GazeTeleportAnchorFilter.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/DemoSceneAssets/Settings/TeleportVolumeDestinationSettings.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/Filters/AnyGazedAtTeleportAnchorFilter.asset" !filter !diff unity-yaml
+"Assets/Samples/XR Interaction Toolkit/3.0.11/Starter Assets/Materials/MaterialPipelineHandler.asset" !filter !diff unity-yaml
+"Assets/Settings/DefaultVolumeProfile.asset" !filter !diff unity-yaml
+"Assets/Settings/Mobile_Renderer.asset" !filter !diff unity-yaml
+"Assets/Settings/PC_RPAsset.asset" !filter !diff unity-yaml
+"Assets/Settings/PC_Renderer.asset" !filter !diff unity-yaml
+"Assets/Settings/SampleSceneProfile.asset" !filter !diff unity-yaml
+"Assets/XR/Loaders/OpenXRLoader.asset" !filter !diff unity-yaml
+"Assets/XR/Settings/OpenXR Editor Settings.asset" !filter !diff unity-yaml
+"Assets/XR/XRGeneralSettingsPerBuildTarget.asset" !filter !diff unity-yaml
+"Assets/XRI/Settings/Resources/InteractionLayerSettings.asset" !filter !diff unity-yaml
+"Assets/XRI/Settings/Resources/XRDeviceSimulatorSettings.asset" !filter !diff unity-yaml
+"Assets/XRI/Settings/XRInteractionEditorSettings.asset" !filter !diff unity-yaml
+"ProjectSettings/AudioManager.asset" !filter !diff unity-yaml
+"ProjectSettings/ClusterInputManager.asset" !filter !diff unity-yaml
+"ProjectSettings/DynamicsManager.asset" !filter !diff unity-yaml
+"ProjectSettings/EditorBuildSettings.asset" !filter !diff unity-yaml
+"ProjectSettings/EditorSettings.asset" !filter !diff unity-yaml
+"ProjectSettings/InputManager.asset" !filter !diff unity-yaml
+"ProjectSettings/MemorySettings.asset" !filter !diff unity-yaml
+"ProjectSettings/MultiplayerManager.asset" !filter !diff unity-yaml
+"ProjectSettings/NavMeshAreas.asset" !filter !diff unity-yaml
+"ProjectSettings/PackageManagerSettings.asset" !filter !diff unity-yaml
+"ProjectSettings/Physics2DSettings.asset" !filter !diff unity-yaml
+"ProjectSettings/PresetManager.asset" !filter !diff unity-yaml
+"ProjectSettings/QualitySettings.asset" !filter !diff unity-yaml
+"ProjectSettings/TimeManager.asset" !filter !diff unity-yaml
+"ProjectSettings/URPProjectSettings.asset" !filter !diff unity-yaml
+"ProjectSettings/UnityConnectSettings.asset" !filter !diff unity-yaml
+"ProjectSettings/VFXManager.asset" !filter !diff unity-yaml
+"ProjectSettings/VersionControlSettings.asset" !filter !diff unity-yaml
+"ProjectSettings/XRSettings.asset" !filter !diff unity-yaml
